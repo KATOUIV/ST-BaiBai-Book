@@ -7,7 +7,7 @@
  *
  * 与隐藏机制配套:旧楼层被 is_system=true 踢出主上下文(见 engine.ts),
  * 这里把它们压缩后的摘要 + 当前结构化状态作为 system 提示重新注入,
- * 主模型因此仍能感知被隐藏的剧情。
+ * 主模型因此仍能感知被隐藏的剧情。历史摘要放在聊天顶部附近,当前状态贴近最近对话。
  */
 
 import type { STMessage } from '@/st/context';
@@ -24,10 +24,14 @@ import type { LeafExtra, MemSummary } from './types';
 const IN_CHAT = 1;
 const ROLE_SYSTEM = 0;
 
-/** setExtensionPrompt 的唯一 key;同 key 重复 set 即覆盖,天然幂等 */
-const INJECT_KEY = 'baibai_book_memory';
-/** in-chat 注入深度(写死合理默认,不做 UI 旋钮) */
-const INJECT_DEPTH = 2;
+/** 旧版单槽位 key;刷新时清空,避免升级后 D2 残留重复注入 */
+const LEGACY_INJECT_KEY = 'baibai_book_memory';
+/** 拆分后的 setExtensionPrompt keys;同 key 重复 set 即覆盖,天然幂等 */
+const HISTORY_INJECT_KEY = 'baibai_book_memory_history';
+const STATE_INJECT_KEY = 'baibai_book_memory_state';
+/** 历史摘要尽量放到聊天上下文顶部;当前状态贴近最近对话 */
+const HISTORY_INJECT_DEPTH = 9999;
+const STATE_INJECT_DEPTH = 2;
 
 /**
  * 一条叶子是否「已启用」(应注入)。
@@ -175,21 +179,18 @@ export function renderHistoryNodes(nodes: ViewNode[]): string {
   return nodes.map(n => (n.timeLabel ? `【${n.timeLabel}】${n.text}` : n.text)).join('\n\n');
 }
 
-/**
- * 组合注入文本:已启用的历史摘要 + 当前结构化状态(时间/地点/物品/未了结计划)。
- * 空记忆 / 无启用摘要时,相应段落省略;整体为空时返回空串(注入空串等于清除)。
- */
-export function buildInjectionText(): string {
-  const parts: string[] = [];
+/** 组合历史摘要注入文本;无启用摘要时返回空串(注入空串等于清除)。 */
+export function buildHistoryInjectionText(): string {
   const chat = getContext()?.chat ?? null;
 
-  // A. 历史摘要:从森林选「最高存活压缩层」节点(被收纳的不重复、窗口内全文叶子不注入)
+  // 从森林选「最高存活压缩层」节点(被收纳的不重复、窗口内全文叶子不注入)
   const sums = selectInjectionNodes(memory.summaries, chat);
-  if (sums.length) {
-    parts.push(`[历史剧情摘要]\n${renderHistoryNodes(sums)}`);
-  }
+  if (!sums.length) return '';
+  return `[历史剧情摘要]\n${renderHistoryNodes(sums)}`;
+}
 
-  // B. 当前结构化状态
+/** 组合当前结构化状态注入文本;无有意义状态时返回空串。 */
+export function buildStateInjectionText(): string {
   const st: string[] = [];
   if (memory.state.time) st.push(`当前时间:${memory.state.time}`);
   if (memory.state.location) st.push(`当前地点:${memory.state.location}`);
@@ -202,11 +203,16 @@ export function buildInjectionText(): string {
   // 状态块在有任何有意义内容时才注入(物品/计划即使空也会有「(无)」占位,
   // 但只要存在摘要或时间/地点就值得带上整块)
   const hasState = memory.state.time || memory.state.location || memory.items.length || openPlans.length;
-  if (hasState) {
-    parts.push(`[当前状态]\n${st.join('\n')}`);
-  }
+  if (!hasState) return '';
+  return `[当前状态]\n${st.join('\n')}`;
+}
 
-  return parts.join('\n\n').trim();
+/**
+ * 组合注入文本:已启用的历史摘要 + 当前结构化状态(时间/地点/物品/未了结计划)。
+ * 保留给调试/兼容调用;实际注入由 refreshInjection 拆成两个 ST 槽位。
+ */
+export function buildInjectionText(): string {
+  return [buildHistoryInjectionText(), buildStateInjectionText()].filter(Boolean).join('\n\n').trim();
 }
 
 /** 把当前记忆刷新到 ST 的扩展提示槽。ST 未就绪/旧版无此 API 时静默跳过。 */
@@ -214,11 +220,15 @@ export function refreshInjection(): void {
   const ctx = getContext();
   const fn = ctx?.setExtensionPrompt;
   if (typeof fn !== 'function') return;
-  fn(INJECT_KEY, buildInjectionText(), IN_CHAT, INJECT_DEPTH, false, ROLE_SYSTEM, null);
+  fn(LEGACY_INJECT_KEY, '', IN_CHAT, STATE_INJECT_DEPTH, false, ROLE_SYSTEM, null);
+  fn(HISTORY_INJECT_KEY, buildHistoryInjectionText(), IN_CHAT, HISTORY_INJECT_DEPTH, false, ROLE_SYSTEM, null);
+  fn(STATE_INJECT_KEY, buildStateInjectionText(), IN_CHAT, STATE_INJECT_DEPTH, false, ROLE_SYSTEM, null);
 }
 
 /** 清除注入(注入空串)。切到无记忆的聊天时由 refreshInjection 自动完成,此处供显式调用。 */
 export function clearInjection(): void {
   const ctx = getContext();
-  ctx?.setExtensionPrompt?.(INJECT_KEY, '', IN_CHAT, INJECT_DEPTH, false, ROLE_SYSTEM, null);
+  ctx?.setExtensionPrompt?.(LEGACY_INJECT_KEY, '', IN_CHAT, STATE_INJECT_DEPTH, false, ROLE_SYSTEM, null);
+  ctx?.setExtensionPrompt?.(HISTORY_INJECT_KEY, '', IN_CHAT, HISTORY_INJECT_DEPTH, false, ROLE_SYSTEM, null);
+  ctx?.setExtensionPrompt?.(STATE_INJECT_KEY, '', IN_CHAT, STATE_INJECT_DEPTH, false, ROLE_SYSTEM, null);
 }
