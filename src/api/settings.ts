@@ -1,7 +1,10 @@
+import { getContext } from '@/st/context';
 import { reactive, watch } from 'vue';
 
 /**
- * 副 API 设置(全局,跨聊天)。存 localStorage。
+ * 副 API 设置(全局,跨聊天)。存进 ST 的 extension_settings(→ 服务器 settings.json),
+ * 因而跨设备同步:手机/局域网另一端打开同一 ST 账户即可见到同一份设置。
+ * (旧版本曾存浏览器 localStorage,只在本机生效;见 hydrateSettings 的一次性迁移。)
  * 渠道可配多个;两类摘要任务各指派一个渠道:summary=摘要,resummary=总结。
  */
 
@@ -39,7 +42,9 @@ export interface ApiSettings {
   resummaryThreshold: number;
 }
 
-const STORAGE_KEY = 'bbs.api.v1';
+// extension_settings 里的命名空间键;localStorage 是旧版残留,仅用于一次性迁移。
+const SETTINGS_KEY = 'baibai_book';
+const LEGACY_STORAGE_KEY = 'bbs.api.v1';
 
 function defaults(): ApiSettings {
   return {
@@ -53,26 +58,77 @@ function defaults(): ApiSettings {
   };
 }
 
-function load(): ApiSettings {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaults();
-    return { ...defaults(), ...JSON.parse(raw) };
-  } catch {
-    return defaults();
-  }
+/** 把任意来源的原始对象并入默认值,容错缺字段/类型不符。 */
+function normalize(raw: unknown): ApiSettings {
+  if (!raw || typeof raw !== 'object') return defaults();
+  return { ...defaults(), ...(raw as Partial<ApiSettings>) };
 }
 
-export const apiSettings = reactive<ApiSettings>(load());
+// import 阶段 ST 往往尚未就绪,先以默认值建 reactive;真实值由 hydrateSettings 灌入。
+export const apiSettings = reactive<ApiSettings>(defaults());
+
+// 守门标志:hydrate 完成前不回写,避免「默认值」覆盖服务器上已存的设置。
+let ready = false;
+
+function applyInto(target: ApiSettings, src: ApiSettings): void {
+  target.channels = src.channels;
+  target.assignments = src.assignments;
+  target.autoSummaryEnabled = src.autoSummaryEnabled;
+  target.keepRecent = src.keepRecent;
+  target.autoHide = src.autoHide;
+  target.leafBatchThreshold = src.leafBatchThreshold;
+  target.resummaryThreshold = src.resummaryThreshold;
+}
+
+/** 写回 extension_settings 并防抖落盘到服务器(跨设备同步的关键)。 */
+function persist(): void {
+  const ctx = getContext();
+  if (!ctx?.extensionSettings) return;
+  ctx.extensionSettings[SETTINGS_KEY] = JSON.parse(JSON.stringify(apiSettings));
+  ctx.saveSettingsDebounced?.();
+}
+
+/**
+ * ST 就绪后调用:从 extension_settings 载入真实设置;
+ * 若那里还没有、但 localStorage 有旧值,则迁移过去(老用户不丢配置),迁移后清掉旧键。
+ * 完成后放行 watch 回写。可安全重复调用(只在首次真正 hydrate)。
+ */
+export function hydrateSettings(): void {
+  if (ready) return;
+  const ctx = getContext();
+  if (!ctx?.extensionSettings) return; // ST 未就绪,稍后重试
+
+  const stored = ctx.extensionSettings[SETTINGS_KEY];
+  if (stored && typeof stored === 'object') {
+    applyInto(apiSettings, normalize(stored));
+  } else {
+    // 迁移:extension_settings 里没有 → 尝试搬运旧 localStorage
+    let migrated: ApiSettings | null = null;
+    try {
+      const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+      if (raw) migrated = normalize(JSON.parse(raw));
+    } catch {
+      /* ignore */
+    }
+    if (migrated) applyInto(apiSettings, migrated);
+    // 把当前值(迁移来的或默认)写进 extension_settings,确立同步源
+    ctx.extensionSettings[SETTINGS_KEY] = JSON.parse(JSON.stringify(apiSettings));
+    ctx.saveSettingsDebounced?.();
+    try {
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  ready = true;
+}
 
 watch(
   apiSettings,
   () => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(apiSettings));
-    } catch {
-      /* ignore */
-    }
+    if (!ready) return; // hydrate 前不回写,防止默认值覆盖服务器设置
+    persist();
   },
   { deep: true },
 );

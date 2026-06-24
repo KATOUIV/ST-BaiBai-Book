@@ -87,7 +87,7 @@ const expanded = ref(props.open);
   overflow: hidden;
 }
 .bbs-collapsible-body {
-  padding: 4px 16px 18px;
+  padding: 14px 16px;
   border-top: 1px solid var(--bbs-line);
 }
 </style>

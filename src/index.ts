@@ -1,3 +1,4 @@
+import { hydrateSettings } from '@/api/settings';
 import { bindEngine } from '@/memory/engine';
 import { refreshInjection } from '@/memory/inject';
 import { bindChatLifecycle } from '@/memory/store';
@@ -79,6 +80,8 @@ function bindMemoryWhenReady(attempt = 0) {
   if (window.SillyTavern?.getContext) {
     try {
       console.log('[柏宝书] 启动链开始绑定(getContext 就绪)');
+      // 设置先 hydrate:从 extension_settings 载入(或从旧 localStorage 迁移),之后才跨设备同步
+      hydrateSettings();
       bindChatLifecycle();
       bindEngine();
       // 首屏:把当前聊天已有的记忆挂上注入

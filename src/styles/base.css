@@ -140,6 +140,63 @@
   margin: var(--bbs-gap) 0;
 }
 
+/* —— 通用弹窗:供各分页复用(summary 编辑、settings 渠道编辑等)——
+   不用 Teleport:内容须留在 shadow root 内才能拿到 scoped 样式与 --bbs-* 变量;
+   .bbs-modal-mask 用 position:fixed 覆盖全窗,直接内联渲染即可。 */
+.bbs-modal-mask {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 10001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bbs-overlay);
+  backdrop-filter: blur(3px);
+}
+.bbs-modal {
+  width: 100%;
+  max-width: 520px;
+  max-height: 86vh;
+  max-height: 86dvh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-radius: var(--bbs-radius-win);
+  background: var(--bbs-bg);
+  border: 1px solid var(--bbs-line);
+  box-shadow: var(--bbs-shadow);
+}
+.bbs-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.bbs-modal-title {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--bbs-ink);
+}
+.bbs-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.bbs-modal-label {
+  font-size: 12px;
+  color: var(--bbs-ink-soft);
+}
+.bbs-modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 /* —— 空状态:不是错误,是邀请 —— */
 .bbs-empty {
   display: flex;

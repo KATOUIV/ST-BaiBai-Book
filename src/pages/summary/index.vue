@@ -4,11 +4,19 @@ import { appendOpToLatestLeaf, deleteLeafAt, deleteSummary, editLeafAt } from '@
 import { checkAutoSummary, engineState } from '@/memory/engine';
 import { refreshInjection } from '@/memory/inject';
 import { derivedMeta, memory } from '@/memory/store';
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 
 /* ============ 计划 / 悬念(顶部)============ */
 const newKind = ref<'plan' | 'suspense'>('plan');
 const newContent = ref('');
+// 移动端:手动添加是低频操作,默认收起成一条触发按钮,点击才展开输入区(省空间)。
+// PC 端不受此状态影响——触发按钮在宽屏恒隐藏,输入区恒显示(见样式媒体查询)。
+const composerOpen = ref(false);
+const contentInput = ref<HTMLInputElement | null>(null);
+function openComposer() {
+  composerOpen.value = true;
+  void nextTick(() => contentInput.value?.focus());
+}
 // 计划/悬念只展示「进行中」。点删除即移除——不再有「了结/已了结」概念。
 const openPlans = computed(() => memory.plans.filter(p => p.status === 'open'));
 const hasLeaf = computed(() => derivedMeta.hasLeaf);
@@ -45,14 +53,43 @@ interface Row {
   timeLabel?: string;
   createdAt: number;
   sortKey: number;
-  childCount?: number; // comp
+  floorLo: number; // 覆盖楼层范围下界
+  floorHi: number; // 覆盖楼层范围上界(leaf:与 lo 相同)
   msgIndex?: number; // leaf
   stale?: boolean; // leaf
 }
 
+// 森林:压缩节点 id → 节点。childIds 可指向叶子 id(L1)或下层压缩节点 id(L2+)。
+const compById = computed(() => {
+  const m = new Map<string, (typeof memory.summaries)[number]>();
+  for (const s of memory.summaries) m.set(s.id, s);
+  return m;
+});
+// 被任何压缩节点收纳的 id(叶子或下层节点)→ 即「已被总结」,列表里隐藏,只留森林的根。
+const summarizedIds = computed(() => {
+  const s = new Set<string>();
+  for (const c of memory.summaries) for (const cid of c.childIds) s.add(cid);
+  return s;
+});
+// 递归把一个节点(叶子或压缩节点)解析成它覆盖的所有叶子楼层号。
+function collectFloors(id: string, acc: number[], seen: Set<string>): void {
+  if (seen.has(id)) return;
+  seen.add(id);
+  const leafIdx = leafFloor.value.get(id);
+  if (leafIdx !== undefined) {
+    acc.push(leafIdx);
+    return;
+  }
+  const comp = compById.value.get(id);
+  if (!comp) return;
+  for (const c of comp.childIds) collectFloors(c, acc, seen);
+}
+
 const ordered = computed<Row[]>(() => {
   const rows: Row[] = [];
+  // 叶子:跳过已被总结的(被某压缩节点收纳)——它们由对应总结代表
   for (const l of derivedMeta.leaves) {
+    if (summarizedIds.value.has(l.id)) continue;
     rows.push({
       key: `leaf:${l.id}`,
       kind: 'leaf',
@@ -61,11 +98,19 @@ const ordered = computed<Row[]>(() => {
       timeLabel: l.timeLabel,
       createdAt: l.createdAt,
       sortKey: l.msgIndex,
+      floorLo: l.msgIndex,
+      floorHi: l.msgIndex,
       msgIndex: l.msgIndex,
       stale: l.stale,
     });
   }
+  // 压缩节点:只显示根(未被上层收纳的);楼层范围 = 覆盖的全部叶子楼层 min..max
   for (const s of memory.summaries) {
+    if (summarizedIds.value.has(s.id)) continue;
+    const floors: number[] = [];
+    collectFloors(s.id, floors, new Set());
+    const lo = floors.length ? Math.min(...floors) : -1;
+    const hi = floors.length ? Math.max(...floors) : -1;
     rows.push({
       key: `comp:${s.id}`,
       kind: 'comp',
@@ -73,17 +118,24 @@ const ordered = computed<Row[]>(() => {
       text: s.text,
       timeLabel: s.timeLabel,
       createdAt: s.createdAt,
-      sortKey: Number.MAX_SAFE_INTEGER - 1e9 + s.createdAt / 1e6,
-      childCount: s.childIds.length,
+      // 排序用覆盖范围上界(最新楼层),与叶子楼层同尺度,倒序时落在对应位置
+      sortKey: hi,
+      floorLo: lo,
+      floorHi: hi,
     });
   }
-  return rows.sort((a, b) => a.sortKey - b.sortKey);
+  // 倒序:楼层越靠后越在上面
+  return rows.sort((a, b) => b.sortKey - a.sortKey);
 });
 
 function levelLabel(level: number): string {
   if (level === 0) return '摘要';
-  if (level === 1) return '总结';
-  return `L${level} 总结`;
+  return `总结L${level}`;
+}
+/** 楼层范围标签:单楼 #5,跨楼 #0 - #10 */
+function floorLabel(r: Row): string {
+  if (r.floorLo < 0) return '—';
+  return r.floorLo === r.floorHi ? `#${r.floorLo}` : `#${r.floorLo} - #${r.floorHi}`;
 }
 
 function onDelete(r: Row) {
@@ -122,12 +174,25 @@ function saveEdit() {
       <h2 class="bbs-title">计划 · 悬念</h2>
     </div>
 
-    <div class="bbs-addplan">
+    <!-- 移动端收起态:仅一条触发按钮(宽屏恒隐藏) -->
+    <button
+      v-if="!composerOpen"
+      class="bbs-addplan-trigger"
+      type="button"
+      :disabled="!hasLeaf"
+      @click="openComposer"
+    >
+      <Icon name="plans" />
+      <span>{{ hasLeaf ? '添加计划 / 悬念' : '需先有摘要才能手动添加' }}</span>
+    </button>
+
+    <div class="bbs-addplan" :class="{ 'is-open': composerOpen }">
       <div class="bbs-kind-toggle">
         <button type="button" class="bbs-kind" :class="{ 'is-on': newKind === 'plan' }" @click="newKind = 'plan'">计划</button>
         <button type="button" class="bbs-kind" :class="{ 'is-on': newKind === 'suspense' }" @click="newKind = 'suspense'">悬念</button>
       </div>
       <input
+        ref="contentInput"
         v-model="newContent"
         class="bbs-input"
         type="text"
@@ -150,7 +215,10 @@ function saveEdit() {
     </div>
     <p v-else class="bbs-plan-empty">还没有计划或悬念。摘要时会自动捕捉,也可手动添加。</p>
 
-    <hr class="bbs-rule" />
+    <!-- 分章分隔:两侧细线 + 居中金色菱形(古籍分章鱼尾标记),比普通 hr 更明确地隔开两区 -->
+    <div class="bbs-divider" role="separator" aria-hidden="true">
+      <span class="bbs-divider-mark"></span>
+    </div>
 
     <!-- ===== 摘要 ===== -->
     <div class="bbs-section-head">
@@ -183,11 +251,18 @@ function saveEdit() {
         :class="{ 'is-deep': r.level > 0, 'is-stale': r.stale }"
       >
         <header class="bbs-summary-meta">
-          <span class="bbs-summary-badge">{{ levelLabel(r.level) }}</span>
-          <!-- 楼层号/收纳数:紧跟标签的定位标签 -->
-          <span class="bbs-summary-loc">{{ r.kind === 'leaf' ? `#${r.msgIndex}` : `${r.childCount} 条` }}</span>
+          <!-- 总结:保留层级标签 + 范围药丸 + 时间(多条合并,需要标识层级) -->
+          <template v-if="r.kind === 'comp'">
+            <span class="bbs-summary-badge">{{ levelLabel(r.level) }}</span>
+            <span class="bbs-summary-loc">{{ floorLabel(r) }}</span>
+            <span v-if="r.timeLabel" class="bbs-summary-time">{{ r.timeLabel }}</span>
+          </template>
+          <!-- 摘要:时间作日期题首,楼层用中点轻接;无时间时楼层自身升为题首 -->
+          <template v-else>
+            <span v-if="r.timeLabel" class="bbs-summary-dateline">{{ r.timeLabel }}</span>
+            <span class="bbs-summary-floor-inline" :class="{ 'is-lead': !r.timeLabel }">{{ floorLabel(r) }}</span>
+          </template>
           <span v-if="r.stale" class="bbs-summary-stale">待更新</span>
-          <span v-if="r.timeLabel" class="bbs-summary-time">{{ r.timeLabel }}</span>
           <span class="bbs-summary-acts">
             <button
               v-if="r.kind === 'leaf'"
@@ -216,11 +291,11 @@ function saveEdit() {
       <p>还没有摘要。对话累积到设定楼层后会自动生成,也可点「立即摘要」。</p>
     </div>
 
-  <!-- ===== 编辑弹窗 ===== -->
-  <!-- Teleport 必须收在 <section> 内:页面组件须单一根节点,否则与 App.vue 的
-       <Transition mode="out-in"> 冲突,切页后新组件无法挂载(整页变空)。
-       Teleport 内容传送到 body,放在 section 内不影响布局。 -->
-  <Teleport to="body">
+    <!-- ===== 编辑弹窗 ===== -->
+    <!-- 不用 Teleport:Teleport to="body" 会把弹窗送到 shadow root 之外的 light DOM,
+         那里既拿不到本组件的 scoped 样式、也拿不到 --bbs-* 主题变量(变量定义在 shadow
+         内的 .bbs-root 上),导致弹窗无样式、被遮罩盖住(PC)甚至完全不可见(移动端)。
+         弹窗本身 position:fixed,直接内联渲染即可覆盖全窗,且样式/变量都正常生效。 -->
     <div v-if="editing" class="bbs-modal-mask" @click.self="cancelEdit">
       <div class="bbs-modal" role="dialog" aria-modal="true" aria-label="编辑摘要">
         <header class="bbs-modal-head">
@@ -241,7 +316,6 @@ function saveEdit() {
         </footer>
       </div>
     </div>
-  </Teleport>
   </section>
 </template>
 
@@ -259,6 +333,28 @@ function saveEdit() {
 }
 
 /* —— 计划/悬念 —— */
+/* 收起态触发按钮:仅移动端使用(宽屏 display:none),整宽虚线框,低调邀请态 */
+.bbs-addplan-trigger {
+  display: none; /* 宽屏恒隐藏;移动端媒体查询里翻成 flex */
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 12px;
+  padding: 11px 14px;
+  border: 1px dashed var(--bbs-line-strong);
+  border-radius: var(--bbs-radius);
+  background: transparent;
+  color: var(--bbs-ink-soft);
+  font-family: var(--bbs-font-sans);
+  font-size: 14px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.bbs-addplan-trigger:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 .bbs-addplan {
   display: flex;
   gap: 8px;
@@ -407,6 +503,30 @@ function saveEdit() {
   color: var(--bbs-danger);
 }
 
+/* —— 分章分隔:计划/悬念 与 摘要 两区之间的明确界线 —— */
+/* 两侧细线在中间断开,嵌一枚金色小菱形——古籍分章的鱼尾标记,呼应纸墨主题 */
+.bbs-divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 26px 0;
+}
+.bbs-divider::before,
+.bbs-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--bbs-line-strong);
+}
+.bbs-divider-mark {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  transform: rotate(45deg);
+  background: var(--bbs-accent);
+  border-radius: 1px;
+}
+
 /* —— 摘要列表 —— */
 .bbs-summary-list {
   display: flex;
@@ -437,8 +557,35 @@ function saveEdit() {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   flex-wrap: wrap;
+}
+/* 摘要题首:故事内时间升为主标题,稍大、半粗、tabular 数字像账册日期 */
+.bbs-summary-dateline {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--bbs-ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+/* 楼层:用中点轻接在日期后,弱化为副信息;无时间时(.is-lead)自身升为题首 */
+.bbs-summary-floor-inline {
+  font-size: 12px;
+  color: var(--bbs-ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+.bbs-summary-floor-inline::before {
+  content: '·';
+  margin-right: 8px;
+  color: var(--bbs-ink-muted);
+}
+.bbs-summary-floor-inline.is-lead {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--bbs-ink);
+}
+.bbs-summary-floor-inline.is-lead::before {
+  content: none;
 }
 /* 标签与楼层号:高度一致(同 height + 居中);楼层号最小宽 = 摘要标签宽,数字变长再撑开 */
 .bbs-summary-badge,
@@ -507,8 +654,9 @@ function saveEdit() {
 }
 .bbs-summary-text {
   margin: 0;
-  font-size: 14px;
-  line-height: 1.7;
+  font-size: 13px;
+  line-height: 1.8;
+  letter-spacing: 0.025em;
   color: var(--bbs-ink-soft);
   white-space: pre-wrap;
 }
@@ -517,59 +665,12 @@ function saveEdit() {
   flex: 1;
 }
 
-/* —— 编辑弹窗 —— */
-.bbs-modal-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 10001;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: var(--bbs-overlay);
-  backdrop-filter: blur(3px);
-}
-.bbs-modal {
-  width: 100%;
-  max-width: 520px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 18px;
-  border-radius: var(--bbs-radius-win);
-  background: var(--bbs-bg);
-  border: 1px solid var(--bbs-line);
-  box-shadow: var(--bbs-shadow);
-}
-.bbs-modal-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.bbs-modal-title {
-  font-weight: 600;
-  font-size: 15px;
-  color: var(--bbs-ink);
-}
-.bbs-modal-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.bbs-modal-label {
-  font-size: 12px;
-  color: var(--bbs-ink-soft);
-}
+/* —— 编辑弹窗:外壳样式已提到 base.css 通用,这里只补本页专用的 textarea —— */
 .bbs-modal-textarea {
   resize: vertical;
   min-height: 120px;
   line-height: 1.6;
   font-family: var(--bbs-font-sans);
-}
-.bbs-modal-foot {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
 }
 
 /* ============ 触屏:没有 hover,动作键常显但低调(非大色块) ============ */
@@ -591,10 +692,18 @@ function saveEdit() {
   }
 }
 
-/* ============ 窄屏:输入区两行堆叠、状态条整齐 ============ */
+/* ============ 窄屏:手动添加默认收起、输入区两行堆叠、状态条整齐 ============ */
 @media (max-width: 640px) {
-  /* 组合器拆两行:整宽分段切换在上,输入框 + 添加在下 */
+  /* 收起态:显示触发按钮,隐藏输入区;点击展开(.is-open)后反过来 */
+  .bbs-addplan-trigger {
+    display: flex;
+  }
   .bbs-addplan {
+    display: none;
+  }
+  /* 展开态:整宽分段切换在上,输入框 + 添加在下(两行堆叠) */
+  .bbs-addplan.is-open {
+    display: flex;
     flex-wrap: wrap;
   }
   .bbs-kind-toggle {

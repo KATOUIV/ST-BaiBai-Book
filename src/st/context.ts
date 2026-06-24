@@ -41,6 +41,10 @@ export interface STContext {
   saveMetadataDebounced: () => void;
   saveMetadata: () => Promise<void>;
   saveChat: () => Promise<void>;
+  /** 扩展全局设置对象(= extension_settings,写进服务器 settings.json,跨设备同步)。ST 稳定 API。 */
+  extensionSettings?: Record<string, unknown>;
+  /** 防抖保存全局设置(连同 extensionSettings 落盘到服务器)。ST 稳定 API。 */
+  saveSettingsDebounced?: () => void;
   reloadCurrentChat: () => Promise<void>;
   eventSource: STEventSource;
   eventTypes: STEventTypes;

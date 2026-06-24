@@ -4,7 +4,7 @@ import Icon from '@/components/Icon.vue';
 import { fetchModels, testChannel } from '@/api/client';
 import { apiSettings, newChannel, type ApiChannel } from '@/api/settings';
 import { ui, THEMES, type NavPosition } from '@/state/ui';
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 
 const navOptions: { value: NavPosition; label: string }[] = [
   { value: 'auto', label: '自动' },
@@ -12,8 +12,25 @@ const navOptions: { value: NavPosition; label: string }[] = [
   { value: 'bottom', label: '底部' },
 ];
 
+/* —— 渠道:列表只读展示,编辑/新建都在弹窗里进行,避免一长列表单平铺误触 —— */
+const editingId = ref<string | null>(null);
+const editingChannel = computed(() => apiSettings.channels.find(c => c.id === editingId.value) ?? null);
+// 密钥默认隐藏;每次打开/关闭弹窗都复位,避免密钥意外保持明文
+const showKey = ref(false);
+
 function addChannel() {
-  apiSettings.channels.push(newChannel());
+  const ch = newChannel();
+  apiSettings.channels.push(ch);
+  showKey.value = false;
+  editingId.value = ch.id; // 新建即进入编辑弹窗
+}
+function openChannel(id: string) {
+  showKey.value = false;
+  editingId.value = id;
+}
+function closeChannel() {
+  showKey.value = false;
+  editingId.value = null;
 }
 function removeChannel(id: string) {
   const idx = apiSettings.channels.findIndex(c => c.id === id);
@@ -21,6 +38,7 @@ function removeChannel(id: string) {
   // 清理指派
   if (apiSettings.assignments.summary === id) apiSettings.assignments.summary = '';
   if (apiSettings.assignments.resummary === id) apiSettings.assignments.resummary = '';
+  if (editingId.value === id) editingId.value = null;
 }
 
 const testing = ref<Record<string, string>>({});
@@ -119,51 +137,23 @@ async function pullModels(ch: ApiChannel) {
 
         <hr class="bbs-rule" />
 
-        <!-- 渠道列表 -->
-        <div v-for="ch in apiSettings.channels" :key="ch.id" class="bbs-channel">
-          <div class="bbs-channel-head">
-            <input v-model="ch.name" class="bbs-input bbs-channel-name" placeholder="渠道名" />
-            <button class="bbs-icon-mini" type="button" title="测试连通" @click="doTest(ch)">
-              <Icon name="plug" />
-            </button>
-            <button class="bbs-icon-mini" type="button" title="删除" @click="removeChannel(ch.id)">
-              <Icon name="close" />
-            </button>
-          </div>
-          <input v-model="ch.url" class="bbs-input" placeholder="API 地址,如 https://api.openai.com/v1" />
-          <input v-model="ch.key" class="bbs-input" type="password" placeholder="API 密钥" />
-          <!-- 模型:可拉取下拉,也可手填 -->
-          <div class="bbs-model-row">
-            <select v-if="models[ch.id]?.length" v-model="ch.model" class="bbs-input">
-              <option v-for="m in models[ch.id]" :key="m" :value="m">{{ m }}</option>
-            </select>
-            <input v-else v-model="ch.model" class="bbs-input" placeholder="模型名,如 gpt-4o-mini" />
-            <button
-              class="bbs-icon-mini"
-              type="button"
-              :title="loadingModels[ch.id] ? '拉取中…' : '拉取模型'"
-              :disabled="loadingModels[ch.id]"
-              @click="pullModels(ch)"
-            >
-              <Icon name="refresh" />
-            </button>
-          </div>
-          <div class="bbs-channel-row">
-            <label class="bbs-mini-field">
-              <span>温度</span>
-              <input v-model.number="ch.temperature" class="bbs-input" type="number" step="0.1" min="0" max="2" />
-            </label>
-            <label class="bbs-mini-field">
-              <span>最大 token</span>
-              <input v-model.number="ch.maxTokens" class="bbs-input" type="number" step="256" min="256" />
-            </label>
-          </div>
-          <p v-if="testing[ch.id]" class="bbs-channel-test">{{ testing[ch.id] }}</p>
+        <!-- 渠道:顶部添加按钮 + 紧凑只读列表(点行进弹窗编辑),不再一长列表单平铺 -->
+        <div class="bbs-channel-bar">
+          <span class="bbs-field-label">渠道</span>
+          <button class="bbs-btn bbs-btn-primary" type="button" @click="addChannel">
+            <Icon name="plus" /> 添加渠道
+          </button>
         </div>
 
-        <button class="bbs-btn" type="button" @click="addChannel">
-          <Icon name="plug" /> 添加渠道
-        </button>
+        <ul v-if="apiSettings.channels.length" class="bbs-channel-list">
+          <li v-for="ch in apiSettings.channels" :key="ch.id" class="bbs-channel-item">
+            <button class="bbs-channel-open" type="button" @click="openChannel(ch.id)">
+              <span class="bbs-channel-item-name">{{ ch.name || '未命名渠道' }}</span>
+              <span class="bbs-channel-item-model">{{ ch.model || '未设模型' }}</span>
+            </button>
+          </li>
+        </ul>
+        <p v-else class="bbs-field-hint">还没有渠道。点「添加渠道」配置摘要/总结要用的 API。</p>
       </Collapsible>
 
       <!-- 摘要设置 -->
@@ -198,6 +188,86 @@ async function pullModels(ch: ApiChannel) {
       <Collapsible title="向量记忆" :open="false">
         <p class="bbs-field-hint">即将开放。</p>
       </Collapsible>
+    </div>
+
+    <!-- ===== 渠道编辑弹窗 ===== -->
+    <div v-if="editingChannel" class="bbs-modal-mask" @click.self="closeChannel">
+      <div class="bbs-modal" role="dialog" aria-modal="true" aria-label="编辑渠道">
+        <header class="bbs-modal-head">
+          <span class="bbs-modal-title">编辑渠道</span>
+          <button class="bbs-icon-mini" type="button" title="关闭" @click="closeChannel"><Icon name="close" /></button>
+        </header>
+
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">渠道名</span>
+          <input v-model="editingChannel.name" class="bbs-input" placeholder="渠道名" />
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">API 地址</span>
+          <input v-model="editingChannel.url" class="bbs-input" placeholder="如 https://api.openai.com/v1" />
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">API 密钥</span>
+          <div class="bbs-model-row">
+            <input
+              v-model="editingChannel.key"
+              class="bbs-input"
+              :type="showKey ? 'text' : 'password'"
+              placeholder="API 密钥"
+            />
+            <button
+              class="bbs-icon-mini"
+              type="button"
+              :title="showKey ? '隐藏密钥' : '显示密钥'"
+              :aria-pressed="showKey"
+              @click="showKey = !showKey"
+            >
+              <Icon :name="showKey ? 'eye-off' : 'eye'" />
+            </button>
+          </div>
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">模型</span>
+          <div class="bbs-model-row">
+            <select v-if="models[editingChannel.id]?.length" v-model="editingChannel.model" class="bbs-input">
+              <option v-for="m in models[editingChannel.id]" :key="m" :value="m">{{ m }}</option>
+            </select>
+            <input v-else v-model="editingChannel.model" class="bbs-input" placeholder="模型名,如 gpt-4o-mini" />
+            <button
+              class="bbs-icon-mini"
+              type="button"
+              :title="loadingModels[editingChannel.id] ? '拉取中…' : '拉取模型'"
+              :disabled="loadingModels[editingChannel.id]"
+              @click="pullModels(editingChannel)"
+            >
+              <Icon name="refresh" />
+            </button>
+          </div>
+        </label>
+        <div class="bbs-channel-row">
+          <label class="bbs-mini-field">
+            <span>温度</span>
+            <input v-model.number="editingChannel.temperature" class="bbs-input" type="number" step="0.1" min="0" max="2" />
+          </label>
+          <label class="bbs-mini-field">
+            <span>最大 token</span>
+            <input v-model.number="editingChannel.maxTokens" class="bbs-input" type="number" step="256" min="256" />
+          </label>
+        </div>
+        <p v-if="testing[editingChannel.id]" class="bbs-channel-test">{{ testing[editingChannel.id] }}</p>
+
+        <footer class="bbs-modal-foot">
+          <!-- 删除靠左、与右侧主操作拉开,破坏性动作不与「完成」相邻,降低误触 -->
+          <button class="bbs-btn bbs-btn-danger" type="button" @click="removeChannel(editingChannel.id)">
+            <Icon name="trash" /> 删除
+          </button>
+          <span class="bbs-modal-foot-spacer"></span>
+          <button class="bbs-btn" type="button" @click="doTest(editingChannel)">
+            <Icon name="plug" /> 测试连通
+          </button>
+          <button class="bbs-btn bbs-btn-primary" type="button" @click="closeChannel">完成</button>
+        </footer>
+      </div>
     </div>
   </section>
 </template>
@@ -287,26 +357,85 @@ async function pullModels(ch: ApiChannel) {
   max-width: 60%;
 }
 
-/* 渠道卡片 */
-.bbs-channel {
+/* 渠道:顶部操作条(标签 + 添加按钮) */
+.bbs-channel-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+/* 渠道:紧凑只读列表,每渠道一行,点行进弹窗编辑 */
+.bbs-channel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px;
-  margin-bottom: 12px;
+}
+.bbs-channel-item {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+/* 行主体:整块可点,左名字右模型 */
+.bbs-channel-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
   border: 1px solid var(--bbs-line);
   border-radius: var(--bbs-radius);
   background: var(--bbs-surface-2);
+  color: var(--bbs-ink);
+  font-family: var(--bbs-font-sans);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--bbs-dur) var(--bbs-ease), background var(--bbs-dur) var(--bbs-ease);
 }
-.bbs-channel-head {
-  display: flex;
-  gap: 8px;
-  align-items: center;
+.bbs-channel-open:hover {
+  border-color: var(--bbs-accent);
+  background: var(--bbs-surface);
 }
-.bbs-channel-name {
-  flex: 1;
+/* 渠道名:完整显示,允许换行,占据剩余空间 */
+.bbs-channel-item-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14px;
   font-weight: 600;
+  word-break: break-word;
 }
+/* 模型名:次要信息,过长则截断,不挤占名字 */
+.bbs-channel-item-model {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--bbs-ink-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 弹窗底部:spacer 把删除键推到最左,与右侧操作分隔 */
+.bbs-modal-foot-spacer {
+  flex: 1 1 auto;
+}
+/* 危险操作按钮:描边低调,hover 才显红,避免误触 */
+.bbs-btn-danger {
+  color: var(--bbs-danger);
+  border-color: var(--bbs-line-strong);
+}
+.bbs-btn-danger:hover {
+  color: var(--bbs-danger);
+  border-color: var(--bbs-danger);
+  background: var(--bbs-danger-soft);
+}
+
 .bbs-model-row {
   display: flex;
   gap: 8px;
