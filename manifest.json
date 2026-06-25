@@ -5,7 +5,7 @@
   "optional": [],
   "js": "dist/index.js",
   "generate_interceptor": "bbs_generateInterceptor",
-  "author": "baibai",
+  "author": "柏柏",
   "version": "0.0.1",
   "homePage": "https://github.com/baibai-git/ST-BaiBai-Book",
   "auto_update": false,

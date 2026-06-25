@@ -50,21 +50,52 @@ const excludeParamsText = computed<string>({
   },
 });
 
+// 本次「新建但尚未确认」的渠道 id:取消(×/点外面)时要把它移除,只有点「完成」才真正保留。
+const pendingNewId = ref<string | null>(null);
+
 function addChannel(scope: ChannelScope = 'api') {
   const ch = newChannel();
   channelsOf(scope).push(ch);
   showKey.value = false;
   editingScope.value = scope;
   editingId.value = ch.id; // 新建即进入编辑弹窗
+  pendingNewId.value = ch.id; // 标记为待确认
 }
 function openChannel(id: string, scope: ChannelScope = 'api') {
   showKey.value = false;
   editingScope.value = scope;
   editingId.value = id;
+  pendingNewId.value = null; // 编辑已有渠道,非新建
 }
+/** 取消(× / 点遮罩):新建未确认的渠道直接丢弃;编辑已有渠道则仅关闭(改动是实时的,保持原行为)。 */
 function closeChannel() {
+  if (pendingNewId.value && editingId.value === pendingNewId.value) {
+    const list = channelsOf(editingScope.value);
+    const idx = list.findIndex(c => c.id === pendingNewId.value);
+    if (idx >= 0) list.splice(idx, 1);
+  }
+  pendingNewId.value = null;
   showKey.value = false;
   editingId.value = null;
+}
+/** 完成:确认保留(清掉待确认标记)后关闭。 */
+function confirmChannel() {
+  pendingNewId.value = null;
+  showKey.value = false;
+  editingId.value = null;
+}
+// 删除渠道前的二次确认:点删除先开确认弹窗,确认后才真正删。
+const confirmDeleteOpen = ref(false);
+function askRemoveChannel() {
+  confirmDeleteOpen.value = true;
+}
+function cancelRemoveChannel() {
+  confirmDeleteOpen.value = false;
+}
+function confirmRemoveChannel() {
+  const ch = editingChannel.value;
+  confirmDeleteOpen.value = false;
+  if (ch) removeChannel(ch.id);
 }
 function removeChannel(id: string) {
   const scope = editingScope.value;
@@ -80,6 +111,8 @@ function removeChannel(id: string) {
       if (apiSettings.vector[role].channel === id) apiSettings.vector[role].channel = '';
     }
   }
+  // 已显式删除,别再让 closeChannel 二次移除(虽幂等,清掉更清晰)
+  if (pendingNewId.value === id) pendingNewId.value = null;
   if (editingId.value === id) editingId.value = null;
 }
 
@@ -582,16 +615,35 @@ function insertMacro(token: string) {
 
         <footer class="bbs-modal-foot">
           <!-- 删除靠左、与右侧主操作拉开,破坏性动作不与「完成」相邻,降低误触。
-               删除/测试连通:PC 显「图标+文字」,移动端仅留图标(文字 .bbs-btn-label 隐藏),省版面 -->
-          <button class="bbs-btn bbs-btn-danger" type="button" title="删除" @click="removeChannel(editingChannel.id)">
-            <Icon name="trash" /> <span class="bbs-btn-label">删除</span>
+               删除:始终显示文字;测试:PC 显「测试渠道」,移动端只显「测试」(短版,省版面) -->
+          <button class="bbs-btn bbs-btn-danger" type="button" @click="askRemoveChannel">
+            <Icon name="trash" /> 删除
           </button>
           <span class="bbs-modal-foot-spacer"></span>
-          <button class="bbs-btn" type="button" title="测试连通" @click="doTest(editingChannel)">
-            <Icon name="plug" /> <span class="bbs-btn-label">测试连通</span>
+          <button class="bbs-btn" type="button" title="测试渠道" @click="doTest(editingChannel)">
+            <Icon name="plug" /> <span class="bbs-btn-label-full">测试渠道</span><span class="bbs-btn-label-short">测试</span>
           </button>
-          <button class="bbs-btn bbs-btn-primary" type="button" @click="closeChannel">完成</button>
+          <button class="bbs-btn bbs-btn-primary" type="button" @click="confirmChannel">完成</button>
         </footer>
+      </div>
+
+      <!-- 删除渠道二次确认:叠在渠道弹窗之上 -->
+      <div v-if="confirmDeleteOpen" class="bbs-modal-mask bbs-modal-mask-top" @click.self="cancelRemoveChannel">
+        <div class="bbs-modal bbs-modal-confirm" role="dialog" aria-modal="true" aria-label="确认删除渠道">
+          <header class="bbs-modal-head">
+            <span class="bbs-modal-title">删除渠道</span>
+          </header>
+          <p class="bbs-confirm-text">
+            确定删除渠道「{{ editingChannel.name || '未命名渠道' }}」吗?此操作不可撤销,已指派该渠道的任务会被清空。
+          </p>
+          <footer class="bbs-modal-foot">
+            <span class="bbs-modal-foot-spacer"></span>
+            <button class="bbs-btn" type="button" @click="cancelRemoveChannel">取消</button>
+            <button class="bbs-btn bbs-btn-danger" type="button" @click="confirmRemoveChannel">
+              <Icon name="trash" /> 删除
+            </button>
+          </footer>
+        </div>
       </div>
     </div>
 
@@ -779,6 +831,11 @@ function insertMacro(token: string) {
   font-size: 12px;
 }
 
+/* 测试按钮文字:默认(PC)显完整版,短版藏起;窄屏在媒体查询里互换 */
+.bbs-btn-label-short {
+  display: none;
+}
+
 /* 渠道:顶部操作条(标签 + 添加按钮) */
 .bbs-channel-bar {
   display: flex;
@@ -856,6 +913,20 @@ function insertMacro(token: string) {
   color: var(--bbs-danger);
   border-color: var(--bbs-danger);
   background: var(--bbs-danger-soft);
+}
+
+/* 删除确认弹窗:叠在渠道弹窗之上(更高 z-index),窄一些 */
+.bbs-modal-mask-top {
+  z-index: 10002;
+}
+.bbs-modal-confirm {
+  max-width: 380px;
+}
+.bbs-confirm-text {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--bbs-ink-soft);
 }
 
 .bbs-model-row {
@@ -1243,9 +1314,12 @@ function insertMacro(token: string) {
   .bbs-vec-cell-label {
     font-size: 10.5px;
   }
-  /* 渠道弹窗底部:删除/测试连通在窄屏仅留图标,隐藏文字标题省版面(title 仍保留语义) */
-  .bbs-btn-label {
+  /* 渠道弹窗底部:测试按钮窄屏只显短版「测试」,PC 显完整「测试渠道」 */
+  .bbs-btn-label-full {
     display: none;
+  }
+  .bbs-btn-label-short {
+    display: inline;
   }
 }
 </style>
