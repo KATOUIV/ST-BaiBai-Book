@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import Icon from '@/components/Icon.vue';
 import { appendOpToLatestLeaf, deleteLeafAt, deleteSummary, editLeafAt, editSummary } from '@/memory/apply';
-import { engineState, summarizeFloor } from '@/memory/engine';
+import { apiSettings } from '@/api/settings';
+import { engineState, resummarizeNow, summarizeFloor } from '@/memory/engine';
 import { refreshInjection } from '@/memory/inject';
 import { derivedMeta, memory, recomputeDerived } from '@/memory/store';
 import { computed, nextTick, onMounted, ref } from 'vue';
@@ -13,6 +14,7 @@ onMounted(() => recomputeDerived());
 /* ============ 悬念簿(顶部)============ */
 const newKind = ref<'plan' | 'suspense'>('plan');
 const newContent = ref('');
+const newTargetTime = ref(''); // 手动添加计划时的可选目标时间(故事内时间)
 // 手动添加是低频操作:用弹窗承载,平时只露一个小「+」按钮,不占版面。
 const composerOpen = ref(false);
 const contentInput = ref<HTMLTextAreaElement | null>(null);
@@ -20,6 +22,7 @@ function openComposer() {
   if (!hasLeaf.value) return;
   newKind.value = 'plan';
   newContent.value = '';
+  newTargetTime.value = '';
   composerOpen.value = true;
   void nextTick(() => contentInput.value?.focus());
 }
@@ -45,8 +48,12 @@ function planFloor(planId: string): number | undefined {
 function addPlan() {
   const content = newContent.value.trim();
   if (!content) return;
-  if (!appendOpToLatestLeaf({ plans: { add: [{ kind: newKind.value, content }] } })) return;
+  // 创建时间用当前已知故事时间(没有就留空);目标时间仅计划可填,用户填了才带上
+  const createdTime = memory.state.time?.trim() || undefined;
+  const targetTime = newKind.value === 'plan' ? newTargetTime.value.trim() || undefined : undefined;
+  if (!appendOpToLatestLeaf({ plans: { add: [{ kind: newKind.value, content, createdTime, targetTime }] } })) return;
   newContent.value = '';
+  newTargetTime.value = '';
   composerOpen.value = false;
 }
 function removePlan(id: string) {
@@ -64,6 +71,41 @@ async function summarizeOne(floor: number) {
     await summarizeFloor(floor);
   } finally {
     summarizingFloor.value = null;
+  }
+}
+
+/* ============ 立即总结 ============
+ * 手动触发一次「检测是否达阈值 → 达到就总结(可连锁多层)」。结果用一句临时提示反馈。 */
+const resummaryRunning = ref(false);
+const resummaryHint = ref('');
+let resummaryHintTimer: ReturnType<typeof setTimeout> | null = null;
+
+// 总结节奏:实际约每「保留最近 AI 消息数 + 每次总结 AI 消息数」楼总结一次——
+// 最近 keepRecent 条发全文不摘,更早的摘成叶子,叶子攒够 leafBatchThreshold 条压一次总结。
+// 阈值关闭(<2)时不显示节奏句。
+const resummaryEvery = computed(() => Math.max(0, apiSettings.keepRecent) + apiSettings.leafBatchThreshold);
+const showCadence = computed(() => apiSettings.leafBatchThreshold >= 2);
+
+async function doResummarize() {
+  if (resummaryRunning.value || engineState.running) return;
+  resummaryRunning.value = true;
+  resummaryHint.value = '';
+  try {
+    const made = await resummarizeNow();
+    // 有报错优先显示错误(如未指派总结渠道);否则按生成条数给反馈
+    if (engineState.lastError) {
+      resummaryHint.value = '';
+    } else if (made > 0) {
+      resummaryHint.value = `已生成 ${made} 条总结`;
+    } else {
+      // 未达阈值:补一句动态节奏,告诉用户大概每多少楼总结一次
+      const cadence = showCadence.value ? `,约每 ${resummaryEvery.value} 楼总结一次` : '';
+      resummaryHint.value = `当前没有达到总结阈值的摘要${cadence}`;
+    }
+  } finally {
+    resummaryRunning.value = false;
+    if (resummaryHintTimer) clearTimeout(resummaryHintTimer);
+    if (resummaryHint.value) resummaryHintTimer = setTimeout(() => (resummaryHint.value = ''), 4000);
   }
 }
 
@@ -224,6 +266,11 @@ function saveEdit() {
           <button class="bbs-plan-del" type="button" title="删除" @click="removePlan(p.id)"><Icon name="close" /></button>
         </div>
         <p class="bbs-plan-content">{{ p.content }}</p>
+        <!-- 故事内时间:立于(创建时间)/ 目标(目标时间),任一存在才显示 -->
+        <div v-if="p.createdTime || p.targetTime" class="bbs-plan-times">
+          <span v-if="p.createdTime" class="bbs-plan-time">立于 {{ p.createdTime }}</span>
+          <span v-if="p.targetTime" class="bbs-plan-time bbs-plan-time-target">目标 {{ p.targetTime }}</span>
+        </div>
       </div>
     </div>
     <p v-else class="bbs-plan-empty">还没有计划或悬念。摘要时会自动捕捉,也可手动添加。</p>
@@ -236,7 +283,19 @@ function saveEdit() {
     <!-- ===== 摘要 ===== -->
     <div class="bbs-section-head">
       <h2 class="bbs-title bbs-title-sub">摘要</h2>
+      <button
+        class="bbs-btn bbs-btn-sm bbs-resummary-btn"
+        type="button"
+        :disabled="resummaryRunning || engineState.running"
+        title="检测摘要是否达到总结阈值,达到则立即总结一次"
+        @click="doResummarize"
+      >
+        <span v-if="resummaryRunning" class="bbs-pending-spin"></span>
+        <Icon v-else name="plans" />
+        立即总结
+      </button>
     </div>
+    <p v-if="resummaryHint" class="bbs-resummary-hint">{{ resummaryHint }}</p>
 
     <!-- 未摘要楼层:只列楼层号,点一下单独补摘那一楼 -->
     <div v-if="pendingFloors.length" class="bbs-pending">
@@ -344,6 +403,16 @@ function saveEdit() {
             placeholder="描述这条计划或悬念…"
             @keydown.enter.exact.prevent="addPlan"
           ></textarea>
+        </label>
+        <!-- 目标时间仅「计划」可填,可选;悬念一般无目标时间故不显示 -->
+        <label v-if="newKind === 'plan'" class="bbs-modal-field">
+          <span class="bbs-modal-label">目标时间(可选)</span>
+          <input
+            v-model="newTargetTime"
+            class="bbs-input"
+            type="text"
+            placeholder="如 放学后 / 1988/10/1;模糊或留空都可"
+          />
         </label>
         <footer class="bbs-modal-foot">
           <button class="bbs-btn" type="button" @click="closeComposer">取消</button>
@@ -528,6 +597,24 @@ function saveEdit() {
   color: var(--bbs-ink);
   word-break: break-word;
 }
+/* 计划时间:立于/目标 两枚小标签,描边低调,目标用强调色区分 */
+.bbs-plan-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.bbs-plan-time {
+  font-size: 11px;
+  color: var(--bbs-ink-soft);
+  background: var(--bbs-surface-2);
+  border: 1px solid var(--bbs-line);
+  border-radius: var(--bbs-radius-sm);
+  padding: 1px 7px;
+}
+.bbs-plan-time-target {
+  color: var(--bbs-accent);
+  border-color: var(--bbs-accent);
+}
 .bbs-plan-empty {
   margin: 14px 0 0;
   font-size: 13px;
@@ -562,6 +649,26 @@ function saveEdit() {
   margin: 12px 0 0;
   font-size: 12px;
   color: var(--bbs-danger);
+}
+
+/* —— 立即总结按钮:摘要标题右侧的次级操作,小一号,带图标 —— */
+.bbs-resummary-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  font-size: 12px;
+}
+/* 复用未摘要楼层的旋转环(.bbs-pending-spin),此处微调尺寸贴合按钮文字 */
+.bbs-resummary-btn .bbs-pending-spin {
+  width: 12px;
+  height: 12px;
+}
+.bbs-resummary-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--bbs-ink-soft);
 }
 
 /* —— 未摘要楼层:待办面板,用强调色描边的卡片框起来,提示「这些楼还没摘」 —— */

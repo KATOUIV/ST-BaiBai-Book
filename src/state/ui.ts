@@ -1,3 +1,4 @@
+import { apiSettings, onSettingsReady } from '@/api/settings';
 import { reactive, watch } from 'vue';
 
 /** 导航位置:auto = PC 顶部、移动端底部 */
@@ -32,42 +33,53 @@ interface UiState {
   navPosition: NavPosition;
 }
 
-const STORAGE_KEY = 'bbs.ui.v1';
+// activePage(上次停在哪一页)是纯本机临时导航态,跨设备同步无意义、且翻页即回写服务器太频繁,
+// 故仍存本机 localStorage;主题/导航位置是真·设置,改存进 apiSettings.ui(→ ST 跨设备同步)。
+const PAGE_STORAGE_KEY = 'bbs.ui.page.v1';
 
-function load(): Partial<UiState> {
+function loadActivePage(): string {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : {};
+    return localStorage.getItem(PAGE_STORAGE_KEY) || 'summary';
   } catch {
-    return {};
+    return 'summary';
   }
 }
 
-const saved = load();
+// 主题合法性校验:apiSettings.ui.theme 是裸字符串,可能来自旧版本/被手改坏,落到 ui 前先校验。
+function validTheme(t: string): ThemeName {
+  return THEMES.some(x => x.value === t) ? (t as ThemeName) : 'day';
+}
+function validNav(n: string): NavPosition {
+  return n === 'top' || n === 'bottom' || n === 'auto' ? n : 'auto';
+}
 
-// 存的主题可能来自旧版本或被手改坏,校验后再用,否则回落日间
-const savedTheme = THEMES.some(t => t.value === saved.theme) ? (saved.theme as ThemeName) : 'day';
-
+// 先用 apiSettings 当前值建 ui(import 阶段多为默认;hydrate 完成后由 onSettingsReady 回灌真值)。
 export const ui = reactive<UiState>({
   open: false,
-  activePage: saved.activePage ?? 'summary',
-  theme: savedTheme,
-  navPosition: saved.navPosition ?? 'auto',
+  activePage: loadActivePage(),
+  theme: validTheme(apiSettings.ui.theme),
+  navPosition: validNav(apiSettings.ui.navPosition),
 });
 
-// 持久化用户偏好(不含 open / activePage 的临时性也无妨,一并存)
+// settings 跨设备同步值就绪后,把主题/导航回灌进 ui(覆盖 import 阶段的默认)
+onSettingsReady(() => {
+  ui.theme = validTheme(apiSettings.ui.theme);
+  ui.navPosition = validNav(apiSettings.ui.navPosition);
+});
+
+// ui 改变 → 写回 apiSettings.ui(由 settings 的 watch 防抖落盘、跨设备同步);activePage 仍存本机。
 watch(
-  () => [ui.theme, ui.navPosition, ui.activePage],
+  () => [ui.theme, ui.navPosition],
+  () => {
+    apiSettings.ui.theme = ui.theme;
+    apiSettings.ui.navPosition = ui.navPosition;
+  },
+);
+watch(
+  () => ui.activePage,
   () => {
     try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          theme: ui.theme,
-          navPosition: ui.navPosition,
-          activePage: ui.activePage,
-        }),
-      );
+      localStorage.setItem(PAGE_STORAGE_KEY, ui.activePage);
     } catch {
       /* localStorage 不可用时静默 */
     }

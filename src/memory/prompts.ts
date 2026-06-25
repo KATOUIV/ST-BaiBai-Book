@@ -78,7 +78,7 @@ summary 用于记录本回合发生的剧情;除此之外的字段(items、plans
     "remove": ["要移除/消耗的已有物品名"]
   },
   "plans": {
-    "add": [{ "kind": "plan", "content": "新出现的计划/目标" }, { "kind": "suspense", "content": "新出现的悬念/未解之谜" }],
+    "add": [{ "kind": "plan", "content": "新出现的计划/目标", "createdTime": "立计划时的故事内时间", "targetTime": "打算完成的目标时间(见下)" }, { "kind": "suspense", "content": "新出现的悬念/未解之谜", "createdTime": "悬念出现时的故事内时间" }],
     "resolve": ["p1", "p3"]
   }
 }
@@ -117,6 +117,10 @@ summary 用于记录本回合发生的剧情;除此之外的字段(items、plans
   · "悬念"= 非 {{user}}主动控制、需长期回收的未决事项(外部威胁、未解之谜、重要伏笔、他人承诺、信息差等);须满足:不是当场决定的、当前文本未给出结局、有明确文本依据(不是脑补"也许有后续")。
 【核销/了结】plans.resolve 用上方【未了结的计划/悬念】里的编号(如 "p2")指代;只问一句:"文本是否明确说明此事已解决/揭露/兑现/推翻/彻底不可能再发生?"——是且有依据→resolve;否或不确定→保留。悬念不因时间流逝自动消失。
 【新增前必查】写任何 plans.add 前,先核对上方悬念簿,确认不存在同类事项。
+【计划时间】每条 plans.add 都要带 createdTime(该计划/悬念在剧情里被立下/出现时的故事内时间,取本轮当前时间即可,用具体数字化日期时间);计划(plan)还应带 targetTime(打算去做/兑现的目标时间):
+  · 有明确期限→写具体时间(如"放学后""1988/10/1");
+  · 是泛泛的愿望、无明确期限(如"以后有机会一定要去看看")→targetTime 可写模糊描述或直接省略该字段。
+  · 悬念(suspense)通常没有目标时间,可省略 targetTime。
 
 ═══ 【摘要撰写规则】(summary 字段,必填) ═══
 ★ 核心目标:为未来的 AI 提供无损的"前情提要",必须具体且信息密集,字数 150-300 字。
@@ -176,8 +180,8 @@ interface BuildArgs {
   location: string;
   /** 现有物品名列表 */
   items: { name: string; qty?: number; desc?: string }[];
-  /** 未了结计划(顺序即编号 p1..pn) */
-  openPlans: { kind: 'plan' | 'suspense'; content: string }[];
+  /** 未了结计划(顺序即编号 p1..pn);createdTime/targetTime 为故事内时间(可空) */
+  openPlans: { kind: 'plan' | 'suspense'; content: string; createdTime?: string; targetTime?: string }[];
   /** 本轮之前的历史摘要文本(已选「最高压缩层」节点拼接);空表示无前情 */
   history: string;
   /** 待摘要的正文 */
@@ -198,7 +202,14 @@ export function fmtItems(items: BuildArgs['items']): string {
 export function fmtPlans(plans: BuildArgs['openPlans']): string {
   if (!plans.length) return '  (无)';
   return plans
-    .map((p, idx) => `  p${idx + 1}. [${p.kind === 'suspense' ? '悬念' : '计划'}] ${p.content}`)
+    .map((p, idx) => {
+      // 时间括注:有创建/目标时间才带上,格式 A —— (立于 X · 目标 Y),任一缺失则只显示存在的那个
+      const parts: string[] = [];
+      if (p.createdTime?.trim()) parts.push(`立于 ${p.createdTime.trim()}`);
+      if (p.targetTime?.trim()) parts.push(`目标 ${p.targetTime.trim()}`);
+      const time = parts.length ? `(${parts.join(' · ')})` : '';
+      return `  p${idx + 1}. [${p.kind === 'suspense' ? '悬念' : '计划'}] ${p.content}${time}`;
+    })
     .join('\n');
 }
 

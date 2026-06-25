@@ -48,6 +48,10 @@ export interface MemPlan {
   status: 'open' | 'resolved';
   createdAt: number;
   resolvedAt?: number;
+  /** 故事内「创建时间」(AI 直接输出的字符串,如 1988/9/29);与 createdAt(真实毫秒)无关 */
+  createdTime?: string;
+  /** 故事内「目标时间」(AI 直接输出,允许模糊值如「以后有机会」或留空) */
+  targetTime?: string;
 }
 
 /**
@@ -153,7 +157,8 @@ export interface SummaryDelta {
   };
   /** 指令型:计划/悬念增删 */
   plans?: {
-    add?: { kind: 'plan' | 'suspense'; content: string }[];
+    /** createdTime/targetTime 由 AI 直接输出(故事内时间字符串);targetTime 允许模糊或省略 */
+    add?: { kind: 'plan' | 'suspense'; content: string; createdTime?: string; targetTime?: string }[];
     /** 按提示词里展示的短 id(p1/p2…)了结 */
     resolve?: string[];
   };
@@ -175,7 +180,7 @@ export interface StoredDelta {
     remove?: string[];
   };
   plans?: {
-    add?: { kind: 'plan' | 'suspense'; content: string }[];
+    add?: { kind: 'plan' | 'suspense'; content: string; createdTime?: string; targetTime?: string }[];
     /** 了结:稳定 plan id */
     resolve?: string[];
     /** 内部/手动:删除 plan(稳定 id) */

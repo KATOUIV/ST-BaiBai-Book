@@ -22,6 +22,11 @@ export interface ApiChannel {
   temperature: number;
   /** 最大输出 token */
   maxTokens: number;
+  /** 流式传输(默认关);开启后按 SSE 增量拼接 */
+  stream: boolean;
+  /** 排除参数:这些字段名会在构造请求体时从 body 中删除,
+   *  用于规避不接受某些参数(如 temperature/max_tokens)的兼容端点报错。 */
+  excludeParams: string[];
 }
 
 export type TaskType = 'summary' | 'resummary';
@@ -32,6 +37,8 @@ export interface CustomPrompts {
   resummary: string;
   /** 破限提示词:附加在摘要/总结请求里;空串=不附加。 */
   jailbreak: string;
+  /** 固定提示词(时间标签):注入**主对话**模型,要求每条正文前后输出时间标签;空=用内置默认。 */
+  timeTag: string;
 }
 
 /** 单个向量模型的配置。channel 空=复用 embedding 的渠道;model 空=复用 embedding 的模型名。 */
@@ -56,9 +63,19 @@ export interface VectorSettings {
   queryRewrite: VectorModelConfig;
 }
 
+/** 界面偏好里要跨设备同步的部分(主题/导航位置);activePage 等纯本机临时态不在此。 */
+export interface UiPrefs {
+  /** 主题名(合法值见 state/ui.ts 的 THEMES;这里只存字符串,避免 settings 反向依赖 ui) */
+  theme: string;
+  /** 导航位置:top/bottom/auto */
+  navPosition: string;
+}
+
 export interface ApiSettings {
   /** 插件总开关。关闭后停止一切自动注入/摘要/总结/隐藏;ST 菜单入口仍在,可重新打开界面再开启。 */
   enabled: boolean;
+  /** 界面偏好(主题/导航位置),随设置存进 extension_settings → 跨设备同步 */
+  ui: UiPrefs;
   /** 自定义提示词模板(空=用内置) */
   prompts: CustomPrompts;
   /** 向量记忆配置 */
@@ -72,6 +89,8 @@ export interface ApiSettings {
   keepRecent: number;
   /** 自动隐藏被摘要覆盖的消息 */
   autoHide: boolean;
+  /** 时间标签:开启后向主对话注入固定提示词,要求每条正文前后输出 <bbs_start>/<bbs_end>,并自动注册隐藏正则 */
+  timeTagEnabled: boolean;
   /** 积压拦截:发消息前若有 >=2 个已滑出窗口却仍未摘的楼,拦截本次生成并提示去补摘 */
   blockOnBacklog: boolean;
   /** 排除的角色名:这些名字(含重名卡)的聊天里,记忆系统所有功能都不生效 */
@@ -85,11 +104,27 @@ export interface ApiSettings {
 // extension_settings 里的命名空间键;localStorage 是旧版残留,仅用于一次性迁移。
 const SETTINGS_KEY = 'baibai_book';
 const LEGACY_STORAGE_KEY = 'bbs.api.v1';
+// 旧版界面偏好(主题/导航位置/分页)曾单独存这里;现把主题+导航迁进 ui,分页仍留本机(见 state/ui.ts)。
+const LEGACY_UI_STORAGE_KEY = 'bbs.ui.v1';
+
+/** 从旧 localStorage(bbs.ui.v1)取出主题/导航位置,填进 target.ui。仅在 server 尚无 ui 时调用一次。 */
+function migrateLegacyUiPrefs(target: ApiSettings): void {
+  try {
+    const raw = localStorage.getItem(LEGACY_UI_STORAGE_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw) as Partial<UiPrefs>;
+    if (typeof obj.theme === 'string') target.ui.theme = obj.theme;
+    if (typeof obj.navPosition === 'string') target.ui.navPosition = obj.navPosition;
+  } catch {
+    /* 解析失败则维持默认,不阻断 */
+  }
+}
 
 function defaults(): ApiSettings {
   return {
     enabled: true,
-    prompts: { summary: '', resummary: '', jailbreak: '' },
+    ui: { theme: 'day', navPosition: 'auto' },
+    prompts: { summary: '', resummary: '', jailbreak: '', timeTag: '' },
     vector: {
       enabled: false,
       channels: [],
@@ -102,6 +137,7 @@ function defaults(): ApiSettings {
     autoSummaryEnabled: false,
     keepRecent: 5,
     autoHide: true,
+    timeTagEnabled: true,
     blockOnBacklog: true,
     excludedChars: [],
     leafBatchThreshold: 12,
@@ -116,6 +152,12 @@ function normalize(raw: unknown): ApiSettings {
   const merged = { ...d, ...(raw as Partial<ApiSettings>) };
   // prompts 是嵌套对象,展开合并不会补全缺字段,单独兜底(老数据没有 prompts 键时回退默认)
   merged.prompts = { ...d.prompts, ...((raw as Partial<ApiSettings>).prompts ?? {}) };
+  // ui 同为嵌套对象,逐字段兜底(老数据没有 ui 键时回退默认,值非字符串时丢弃)
+  const ru = ((raw as Partial<ApiSettings>).ui ?? {}) as Partial<UiPrefs>;
+  merged.ui = {
+    theme: typeof ru.theme === 'string' ? ru.theme : d.ui.theme,
+    navPosition: typeof ru.navPosition === 'string' ? ru.navPosition : d.ui.navPosition,
+  };
   // excludedChars 必须是字符串数组,旧值类型不符时回退空数组
   merged.excludedChars = Array.isArray(merged.excludedChars)
     ? merged.excludedChars.filter((x): x is string => typeof x === 'string')
@@ -129,7 +171,27 @@ function normalize(raw: unknown): ApiSettings {
     rerank: { ...d.vector.rerank, ...(rv.rerank ?? {}) },
     queryRewrite: { ...d.vector.queryRewrite, ...(rv.queryRewrite ?? {}) },
   };
+  // 渠道:逐个补全新加的字段(老数据没有 stream/excludeParams),并校验类型
+  merged.channels = (Array.isArray(merged.channels) ? merged.channels : []).map(normalizeChannel);
+  merged.vector.channels = (Array.isArray(merged.vector.channels) ? merged.vector.channels : []).map(normalizeChannel);
   return merged;
+}
+
+/** 补全单个渠道的缺失字段(stream/excludeParams 是后加的),并校验类型。 */
+function normalizeChannel(c: Partial<ApiChannel>): ApiChannel {
+  return {
+    id: typeof c.id === 'string' ? c.id : `ch_${Date.now()}_${++chanSeq}`,
+    name: typeof c.name === 'string' ? c.name : '新渠道',
+    url: typeof c.url === 'string' ? c.url : '',
+    key: typeof c.key === 'string' ? c.key : '',
+    model: typeof c.model === 'string' ? c.model : '',
+    temperature: typeof c.temperature === 'number' ? c.temperature : 1.0,
+    maxTokens: typeof c.maxTokens === 'number' ? c.maxTokens : 8192,
+    stream: typeof c.stream === 'boolean' ? c.stream : false,
+    excludeParams: Array.isArray(c.excludeParams)
+      ? c.excludeParams.filter((x): x is string => typeof x === 'string')
+      : [],
+  };
 }
 
 // import 阶段 ST 往往尚未就绪,先以默认值建 reactive;真实值由 hydrateSettings 灌入。
@@ -138,8 +200,17 @@ export const apiSettings = reactive<ApiSettings>(defaults());
 // 守门标志:hydrate 完成前不回写,避免「默认值」覆盖服务器上已存的设置。
 let ready = false;
 
+// hydrate 完成后要通知的订阅者(如 ui.ts:settings 就绪后才能拿到同步过来的主题/导航位置)。
+// 若订阅时已就绪则立刻回调,避免错过时序。
+const readyCbs: Array<() => void> = [];
+export function onSettingsReady(cb: () => void): void {
+  if (ready) cb();
+  else readyCbs.push(cb);
+}
+
 function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.enabled = src.enabled;
+  target.ui = src.ui;
   target.prompts = src.prompts;
   target.vector = src.vector;
   target.channels = src.channels;
@@ -147,6 +218,7 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.autoSummaryEnabled = src.autoSummaryEnabled;
   target.keepRecent = src.keepRecent;
   target.autoHide = src.autoHide;
+  target.timeTagEnabled = src.timeTagEnabled;
   target.blockOnBacklog = src.blockOnBacklog;
   target.excludedChars = src.excludedChars;
   target.leafBatchThreshold = src.leafBatchThreshold;
@@ -174,6 +246,17 @@ export function hydrateSettings(): void {
   const stored = ctx.extensionSettings[SETTINGS_KEY];
   if (stored && typeof stored === 'object') {
     applyInto(apiSettings, normalize(stored));
+    // 老用户:server 已有 api 设置但还没同步过界面偏好 → 把旧 localStorage 的主题/导航迁进来并落盘一次
+    if (!('ui' in (stored as object))) {
+      migrateLegacyUiPrefs(apiSettings);
+      ctx.extensionSettings[SETTINGS_KEY] = JSON.parse(JSON.stringify(apiSettings));
+      ctx.saveSettingsDebounced?.();
+    }
+    try {
+      localStorage.removeItem(LEGACY_UI_STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
   } else {
     // 迁移:extension_settings 里没有 → 尝试搬运旧 localStorage
     let migrated: ApiSettings | null = null;
@@ -184,17 +267,27 @@ export function hydrateSettings(): void {
       /* ignore */
     }
     if (migrated) applyInto(apiSettings, migrated);
+    // 界面偏好同样从旧 localStorage 迁入(新装用户没有此键则维持默认)
+    migrateLegacyUiPrefs(apiSettings);
     // 把当前值(迁移来的或默认)写进 extension_settings,确立同步源
     ctx.extensionSettings[SETTINGS_KEY] = JSON.parse(JSON.stringify(apiSettings));
     ctx.saveSettingsDebounced?.();
     try {
       localStorage.removeItem(LEGACY_STORAGE_KEY);
+      localStorage.removeItem(LEGACY_UI_STORAGE_KEY);
     } catch {
       /* ignore */
     }
   }
 
   ready = true;
+  for (const cb of readyCbs.splice(0)) {
+    try {
+      cb();
+    } catch {
+      /* 订阅者自身异常不阻断后续 */
+    }
+  }
 }
 
 watch(
@@ -215,8 +308,10 @@ export function newChannel(): ApiChannel {
     url: '',
     key: '',
     model: '',
-    temperature: 0.7,
-    maxTokens: 4096,
+    temperature: 1.0,
+    maxTokens: 8192,
+    stream: false,
+    excludeParams: [],
   };
 }
 

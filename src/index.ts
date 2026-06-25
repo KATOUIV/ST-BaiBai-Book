@@ -1,6 +1,7 @@
 import { hydrateSettings } from '@/api/settings';
 import { bindEngine, handleGenerationIntercept } from '@/memory/engine';
 import { refreshInjection } from '@/memory/inject';
+import { syncTimeTagRegex } from '@/memory/timeTag';
 import { bindChatLifecycle } from '@/memory/store';
 import App from '@/App.vue';
 import { injectMenuButton } from '@/menu';
@@ -102,6 +103,8 @@ function bindMemoryWhenReady(attempt = 0) {
       hydrateSettings();
       bindChatLifecycle();
       bindEngine();
+      // 时间标签:按开关注册/移除 ST 隐藏正则(幂等;开关变化的后续同步在 bindEngine 的 watch 里)
+      syncTimeTagRegex();
       // 首屏:把当前聊天已有的记忆挂上注入
       refreshInjection();
       console.log('[柏宝书] 启动链绑定完成');

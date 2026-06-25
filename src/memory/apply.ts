@@ -137,6 +137,8 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
         content: add.content.trim(),
         status: 'open',
         createdAt: t,
+        createdTime: add.createdTime?.trim() || undefined,
+        targetTime: add.targetTime?.trim() || undefined,
       };
       mem.plans.push(plan);
     });

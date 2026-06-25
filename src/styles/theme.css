@@ -146,3 +146,22 @@
   --bbs-shadow: 0 18px 48px -20px oklch(0.45 0.15 350 / 0.3),
     0 4px 12px -6px oklch(0.45 0.15 350 / 0.16);
 }
+
+/* 粉彩强调色是浅粉(#ffafcc),原生 accent-color 复选框会按浅底自动把勾翻成黑色。
+   仅在本主题下把复选框改为自绘:浅粉底 + 强制白色对勾。作用域限定 pastel,不影响其他主题。 */
+.bbs-root[data-theme='pastel'] .bbs-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1.5px solid var(--bbs-line-strong);
+  border-radius: 4px;
+  background: var(--bbs-surface);
+}
+.bbs-root[data-theme='pastel'] .bbs-checkbox:checked {
+  border-color: var(--bbs-accent);
+  background-color: var(--bbs-accent);
+  /* 白色对勾,内联 SVG,与底色无关,不再受浏览器自动反色影响 */
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><path d='M5 12.5 10 17.5 19 7'/></svg>");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 14px;
+}

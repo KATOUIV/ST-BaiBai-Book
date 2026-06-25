@@ -10,12 +10,13 @@
  * 主模型因此仍能感知被隐藏的剧情。历史摘要放在聊天顶部附近,当前状态贴近最近对话。
  */
 
-import { apiSettings } from '@/api/settings';
+import { apiSettings, engineActiveHere } from '@/api/settings';
 import type { STMessage } from '@/st/context';
 import { getContext } from '@/st/context';
 import { getLeaf, leafValid } from './apply';
 import { fmtItems, fmtPlans } from './prompts';
 import { memory } from './store';
+import { timeTagPrompt } from './timeTag';
 import type { LeafExtra, MemSummary } from './types';
 
 // 以下常量来源:SillyTavern public/script.js
@@ -30,10 +31,14 @@ const LEGACY_INJECT_KEY = 'baibai_book_memory';
 /** 拆分后的 setExtensionPrompt keys;同 key 重复 set 即覆盖,天然幂等 */
 const HISTORY_INJECT_KEY = 'baibai_book_memory_history';
 const STATE_INJECT_KEY = 'baibai_book_memory_state';
+/** 时间标签固定提示词槽:注入主对话,要求每条正文前后输出 <bbs_start>/<bbs_end> */
+const TIMETAG_INJECT_KEY = 'baibai_book_time_tag';
 /** 历史摘要尽量放到聊天上下文顶部;当前状态贴近最近对话 */
 const HISTORY_INJECT_DEPTH = 9999;
 const STATE_INJECT_DEPTH_AFTER_LATEST_AI = 1;
 const STATE_INJECT_DEPTH_BEFORE_LATEST_AI = 2;
+/** 时间标签提示词贴近最近对话(浅 depth),作为对「下一条回复」的强指令 */
+const TIMETAG_INJECT_DEPTH = 1;
 
 /**
  * 一条叶子是否「已启用」(应注入)。
@@ -221,7 +226,7 @@ export function buildStateInjectionText(): string {
   st.push(`物品清单:\n${fmtItems(memory.items.map(i => ({ name: i.name, qty: i.qty, desc: i.desc })))}`);
   const openPlans = memory.plans
     .filter(p => p.status === 'open')
-    .map(p => ({ kind: p.kind, content: p.content }));
+    .map(p => ({ kind: p.kind, content: p.content, createdTime: p.createdTime, targetTime: p.targetTime }));
   st.push(`未了结的计划/悬念:\n${fmtPlans(openPlans)}`);
 
   // 状态块在有任何有意义内容时才注入(物品/计划即使空也会有「(无)」占位,
@@ -241,9 +246,12 @@ export function buildInjectionText(): string {
 
 /** 把当前记忆刷新到 ST 的扩展提示槽。ST 未就绪/旧版无此 API 时静默跳过。 */
 export function refreshInjection(): void {
-  // 总开关关闭:不再注入记忆。已注入的旧槽由关闭动作(watch enabled)经 clearInjection 清掉,
-  // 此处仅保证「不再写入新内容」,避免后续聊天事件把记忆又刷回上下文。
-  if (!apiSettings.enabled) return;
+  // 引擎在此聊天不生效(总开关关 / 当前角色被排除):清掉已注入的槽。
+  // 用 clearInjection 而非直接 return —— 切到被排除角色时必须抹掉上个聊天残留的注入。
+  if (!engineActiveHere()) {
+    clearInjection();
+    return;
+  }
   const ctx = getContext();
   const fn = ctx?.setExtensionPrompt;
   if (typeof fn !== 'function') return;
@@ -251,6 +259,8 @@ export function refreshInjection(): void {
   fn(LEGACY_INJECT_KEY, '', IN_CHAT, STATE_INJECT_DEPTH_BEFORE_LATEST_AI, false, ROLE_SYSTEM, null);
   fn(HISTORY_INJECT_KEY, buildHistoryInjectionText(), IN_CHAT, HISTORY_INJECT_DEPTH, false, ROLE_SYSTEM, null);
   fn(STATE_INJECT_KEY, buildStateInjectionText(), IN_CHAT, stateDepth, false, ROLE_SYSTEM, null);
+  // 时间标签固定提示词:开启时注入主对话,关闭时注入空串(等于清除)
+  fn(TIMETAG_INJECT_KEY, apiSettings.timeTagEnabled ? timeTagPrompt() : '', IN_CHAT, TIMETAG_INJECT_DEPTH, false, ROLE_SYSTEM, null);
 }
 
 /** 清除注入(注入空串)。切到无记忆的聊天时由 refreshInjection 自动完成,此处供显式调用。 */
@@ -260,4 +270,5 @@ export function clearInjection(): void {
   ctx?.setExtensionPrompt?.(LEGACY_INJECT_KEY, '', IN_CHAT, STATE_INJECT_DEPTH_BEFORE_LATEST_AI, false, ROLE_SYSTEM, null);
   ctx?.setExtensionPrompt?.(HISTORY_INJECT_KEY, '', IN_CHAT, HISTORY_INJECT_DEPTH, false, ROLE_SYSTEM, null);
   ctx?.setExtensionPrompt?.(STATE_INJECT_KEY, '', IN_CHAT, stateDepth, false, ROLE_SYSTEM, null);
+  ctx?.setExtensionPrompt?.(TIMETAG_INJECT_KEY, '', IN_CHAT, TIMETAG_INJECT_DEPTH, false, ROLE_SYSTEM, null);
 }

@@ -3,6 +3,7 @@ import Collapsible from '@/components/Collapsible.vue';
 import Icon from '@/components/Icon.vue';
 import { fetchModels, testChannel } from '@/api/client';
 import { apiSettings, newChannel, type ApiChannel } from '@/api/settings';
+import { getContext } from '@/st/context';
 import {
   JAILBREAK_PROMPT,
   RESUMMARY_MACROS,
@@ -11,6 +12,7 @@ import {
   SUMMARY_PROMPT,
   type PromptMacro,
 } from '@/memory/prompts';
+import { TIME_TAG_PROMPT } from '@/memory/timeTag';
 import { ui, THEMES, type NavPosition } from '@/state/ui';
 import { computed, nextTick, ref } from 'vue';
 
@@ -34,6 +36,19 @@ const editingChannel = computed(
 );
 // 密钥默认隐藏;每次打开/关闭弹窗都复位,避免密钥意外保持明文
 const showKey = ref(false);
+
+// 排除参数:内部存 string[],编辑时用逗号分隔的单行文本承载,读/写两向转换。
+const excludeParamsText = computed<string>({
+  get: () => editingChannel.value?.excludeParams.join(', ') ?? '',
+  set: v => {
+    const ch = editingChannel.value;
+    if (!ch) return;
+    ch.excludeParams = v
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+  },
+});
 
 function addChannel(scope: ChannelScope = 'api') {
   const ch = newChannel();
@@ -93,8 +108,8 @@ async function pullModels(ch: ApiChannel) {
   }
 }
 
-/* —— 自定义提示词:列表(摘要/总结/破限),点开在弹窗里编辑大文本 —— */
-type PromptKey = 'summary' | 'resummary' | 'jailbreak';
+/* —— 自定义提示词:列表(摘要/总结/破限/时间标签),点开在弹窗里编辑大文本 —— */
+type PromptKey = 'summary' | 'resummary' | 'jailbreak' | 'timeTag';
 interface PromptMeta {
   key: PromptKey;
   label: string;
@@ -122,6 +137,13 @@ const PROMPT_METAS: PromptMeta[] = [
     label: '破限提示词',
     hint: '作为置顶 system 附加在摘要/总结请求里,降低副 API 拒答率。留空则用内置默认。',
     builtin: JAILBREAK_PROMPT,
+    macros: [],
+  },
+  {
+    key: 'timeTag',
+    label: '固定提示词(时间标签)',
+    hint: '注入主对话,要求 AI 每条正文前后输出时间标签,作为剧情时间锚点(摘要与新剧情据此对齐,不再错乱)。需开启下方「正文时间标签」开关。留空用内置默认。',
+    builtin: TIME_TAG_PROMPT,
     macros: [],
   },
 ];
@@ -169,6 +191,48 @@ const VECTOR_ROLES: VectorRoleMeta[] = [
   { key: 'rerank', label: 'Rerank 模型' },
   { key: 'queryRewrite', label: 'Query 重写模型' },
 ];
+
+/* —— 排除角色:勾选的角色名(含重名卡)的聊天里,记忆系统所有功能都不生效。
+   按「名字」排除,所以同名卡是一批一起排除。列表很长时易卡,故:① 仅在弹窗打开时取/去重角色名;
+   ② 带搜索框过滤;③ 用 v-show + 子串匹配,渲染量随搜索收敛。 —— */
+const excludeOpen = ref(false);
+const excludeSearch = ref('');
+
+// 弹窗打开时一次性算出去重后的角色名(按名排序),关闭后不再持有,避免常驻大列表。
+const charNames = computed<string[]>(() => {
+  if (!excludeOpen.value) return [];
+  const chars = getContext()?.characters ?? [];
+  const seen = new Set<string>();
+  for (const c of chars) {
+    const n = c?.name?.trim();
+    if (n) seen.add(n);
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b, 'zh'));
+});
+
+// 过滤:空搜索显示全部;否则大小写不敏感子串匹配
+const filteredCharNames = computed<string[]>(() => {
+  const q = excludeSearch.value.trim().toLowerCase();
+  if (!q) return charNames.value;
+  return charNames.value.filter(n => n.toLowerCase().includes(q));
+});
+
+function openExclude() {
+  excludeSearch.value = '';
+  excludeOpen.value = true;
+}
+function closeExclude() {
+  excludeOpen.value = false;
+}
+function isExcluded(name: string): boolean {
+  return apiSettings.excludedChars.includes(name);
+}
+function toggleExcluded(name: string) {
+  const list = apiSettings.excludedChars;
+  const idx = list.indexOf(name);
+  if (idx >= 0) list.splice(idx, 1);
+  else list.push(name);
+}
 
 // 点宏标签 → 插入到文本框光标处(无焦点则追加到末尾)
 function insertMacro(token: string) {
@@ -308,6 +372,11 @@ function insertMacro(token: string) {
         </label>
         <p class="bbs-field-hint">关闭后仅生成摘要、不隐藏原文(原文与摘要会重复占用上下文)。</p>
         <label class="bbs-switch-row">
+          <span class="bbs-field-label">正文时间标签</span>
+          <input v-model="apiSettings.timeTagEnabled" type="checkbox" class="bbs-checkbox" />
+        </label>
+        <p class="bbs-field-hint">开启后向主对话注入「固定提示词」,要求 AI 每条正文前后输出时间标签(作为剧情时间锚点,让摘要与新剧情时间一致),并自动注册 ST 正则把标签仅在显示层隐藏(不影响发送)。提示词可在下方「自定义提示词 → 固定提示词」里改。</p>
+        <label class="bbs-switch-row">
           <span class="bbs-field-label">积压过多时拦截发送</span>
           <input v-model="apiSettings.blockOnBacklog" type="checkbox" class="bbs-checkbox" />
         </label>
@@ -318,7 +387,7 @@ function insertMacro(token: string) {
         </label>
         <p class="bbs-field-hint">滑动窗口:最近 N 条 AI 消息发送全文;更早的自动生成摘要并从主对话隐藏,摘要会以系统提示注入回上下文,主模型仍可感知。</p>
         <label class="bbs-num-row">
-          <span class="bbs-field-label">摘要压成总结阈值(0=关闭)</span>
+          <span class="bbs-field-label">每次总结 AI 消息数(0=关闭)</span>
           <input v-model.number="apiSettings.leafBatchThreshold" class="bbs-input bbs-num" type="number" min="0" />
         </label>
         <p class="bbs-field-hint">楼层摘要积累到这么多条时,把它们压成一条上层「总结」(底层摘要保留,可随时删总结展开)。</p>
@@ -327,6 +396,28 @@ function insertMacro(token: string) {
           <input v-model.number="apiSettings.resummaryThreshold" class="bbs-input bbs-num" type="number" min="0" />
         </label>
         <p class="bbs-field-hint">总结(及更高层)积累到这么多条时,继续向上压成更高一层总结,逐级递归。</p>
+      </Collapsible>
+
+      <!-- 排除角色 -->
+      <Collapsible title="排除角色" :open="false">
+        <p class="bbs-field-hint">勾选的角色名(含同名的重名卡)所在聊天里,柏宝书的所有功能都不生效——不摘要、不隐藏、不注入、不拦截。适合工具性、不需要记忆的角色。</p>
+        <div class="bbs-channel-bar">
+          <span class="bbs-field-label">
+            已排除 {{ apiSettings.excludedChars.length }} 个
+          </span>
+          <button class="bbs-btn bbs-btn-primary bbs-btn-sm" type="button" @click="openExclude">
+            <Icon name="edit" /> 编辑名单
+          </button>
+        </div>
+        <ul v-if="apiSettings.excludedChars.length" class="bbs-exclude-chips">
+          <li v-for="name in apiSettings.excludedChars" :key="name" class="bbs-exclude-chip">
+            <span class="bbs-exclude-chip-name">{{ name }}</span>
+            <button class="bbs-exclude-chip-x" type="button" title="移出名单" @click="toggleExcluded(name)">
+              <Icon name="close" />
+            </button>
+          </li>
+        </ul>
+        <p v-else class="bbs-field-hint">名单为空,所有角色都启用记忆系统。</p>
       </Collapsible>
 
       <!-- 自定义提示词 -->
@@ -473,16 +564,31 @@ function insertMacro(token: string) {
             <input v-model.number="editingChannel.maxTokens" class="bbs-input" type="number" step="256" min="256" />
           </label>
         </div>
+        <label class="bbs-switch-row">
+          <span class="bbs-modal-label">流式传输</span>
+          <input v-model="editingChannel.stream" type="checkbox" class="bbs-checkbox" />
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">排除参数</span>
+          <input
+            v-model="excludeParamsText"
+            class="bbs-input"
+            type="text"
+            placeholder="逗号分隔,如 temperature, max_tokens"
+          />
+          <span class="bbs-field-hint">这些参数会在发请求前从请求体里删除,用于规避不接受该参数的兼容端点报错。逗号分隔,留空则不排除。</span>
+        </label>
         <p v-if="testing[editingChannel.id]" class="bbs-channel-test">{{ testing[editingChannel.id] }}</p>
 
         <footer class="bbs-modal-foot">
-          <!-- 删除靠左、与右侧主操作拉开,破坏性动作不与「完成」相邻,降低误触 -->
-          <button class="bbs-btn bbs-btn-danger" type="button" @click="removeChannel(editingChannel.id)">
-            <Icon name="trash" /> 删除
+          <!-- 删除靠左、与右侧主操作拉开,破坏性动作不与「完成」相邻,降低误触。
+               删除/测试连通:PC 显「图标+文字」,移动端仅留图标(文字 .bbs-btn-label 隐藏),省版面 -->
+          <button class="bbs-btn bbs-btn-danger" type="button" title="删除" @click="removeChannel(editingChannel.id)">
+            <Icon name="trash" /> <span class="bbs-btn-label">删除</span>
           </button>
           <span class="bbs-modal-foot-spacer"></span>
-          <button class="bbs-btn" type="button" @click="doTest(editingChannel)">
-            <Icon name="plug" /> 测试连通
+          <button class="bbs-btn" type="button" title="测试连通" @click="doTest(editingChannel)">
+            <Icon name="plug" /> <span class="bbs-btn-label">测试连通</span>
           </button>
           <button class="bbs-btn bbs-btn-primary" type="button" @click="closeChannel">完成</button>
         </footer>
@@ -529,6 +635,44 @@ function insertMacro(token: string) {
           <span class="bbs-modal-foot-spacer"></span>
           <button class="bbs-btn" type="button" @click="closePrompt">取消</button>
           <button class="bbs-btn bbs-btn-primary" type="button" @click="savePrompt">完成</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- ===== 排除角色弹窗:搜索 + 勾选列表 ===== -->
+    <div v-if="excludeOpen" class="bbs-modal-mask" @click.self="closeExclude">
+      <div class="bbs-modal" role="dialog" aria-modal="true" aria-label="编辑排除名单">
+        <header class="bbs-modal-head">
+          <span class="bbs-modal-title">排除角色</span>
+          <button class="bbs-icon-mini" type="button" title="关闭" @click="closeExclude"><Icon name="close" /></button>
+        </header>
+
+        <input
+          v-model="excludeSearch"
+          class="bbs-input"
+          type="search"
+          placeholder="搜索角色名…"
+          spellcheck="false"
+        />
+
+        <div class="bbs-exclude-list">
+          <label v-for="name in filteredCharNames" :key="name" class="bbs-exclude-row">
+            <input
+              type="checkbox"
+              class="bbs-checkbox"
+              :checked="isExcluded(name)"
+              @change="toggleExcluded(name)"
+            />
+            <span class="bbs-exclude-row-name">{{ name }}</span>
+          </label>
+          <p v-if="!charNames.length" class="bbs-field-hint">未读取到角色列表。请先在 ST 里加载角色卡。</p>
+          <p v-else-if="!filteredCharNames.length" class="bbs-field-hint">没有匹配「{{ excludeSearch }}」的角色。</p>
+        </div>
+
+        <footer class="bbs-modal-foot">
+          <span class="bbs-exclude-count">共 {{ charNames.length }} 个角色 · 已排除 {{ apiSettings.excludedChars.length }}</span>
+          <span class="bbs-modal-foot-spacer"></span>
+          <button class="bbs-btn bbs-btn-primary" type="button" @click="closeExclude">完成</button>
         </footer>
       </div>
     </div>
@@ -1000,6 +1144,82 @@ function insertMacro(token: string) {
   tab-size: 2;
 }
 
+/* —— 排除角色:已排除名字以药丸形式平铺,点 × 移出 —— */
+.bbs-exclude-chips {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.bbs-exclude-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 11px;
+  border-radius: var(--bbs-radius-pill);
+  background: var(--bbs-accent-soft);
+  color: var(--bbs-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+.bbs-exclude-chip-name {
+  word-break: break-word;
+}
+.bbs-exclude-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.bbs-exclude-chip-x:hover {
+  opacity: 1;
+  background: oklch(0 0 0 / 0.08);
+}
+
+/* 弹窗内角色勾选列表:固定高度内滚动,长名单不撑爆弹窗 */
+.bbs-exclude-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0;
+  padding-right: 2px;
+}
+.bbs-exclude-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px;
+  border-radius: var(--bbs-radius-sm);
+  cursor: pointer;
+}
+.bbs-exclude-row:hover {
+  background: var(--bbs-surface-2);
+}
+.bbs-exclude-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--bbs-ink);
+  word-break: break-word;
+}
+.bbs-exclude-count {
+  font-size: 12px;
+  color: var(--bbs-ink-muted);
+}
+
 /* ============ 移动端:折叠区内部正文整体收一号,与窄屏标题节奏统一 ============ */
 @media (max-width: 640px) {
   .bbs-field-label,
@@ -1022,6 +1242,10 @@ function insertMacro(token: string) {
   }
   .bbs-vec-cell-label {
     font-size: 10.5px;
+  }
+  /* 渠道弹窗底部:删除/测试连通在窄屏仅留图标,隐藏文字标题省版面(title 仍保留语义) */
+  .bbs-btn-label {
+    display: none;
   }
 }
 </style>

@@ -7,6 +7,7 @@ import { addSummary, deriveMemory, finalizeDelta, getLeaf, leafHash, leafValid, 
 import { extractJsonObject } from './json';
 import { clearInjection, refreshInjection, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
 import { buildResummaryPrompt, buildSummaryPrompt, buildWorldInfoSystem, JAILBREAK_PROMPT, THINKING_CHECKLIST, THINKING_PREFILL } from './prompts';
+import { formatRange, inlineTimeTags, parseTimeRange, syncTimeTagRegex } from './timeTag';
 import { memory, recomputeDerived, scheduleLeafFlush } from './store';
 import type { LeafExtra, SummaryDelta } from './types';
 
@@ -29,7 +30,8 @@ function renderMessages(chat: STMessage[], indices: number[], name1: string, nam
       // 双标:既标发言方(用户/角色),又带人名 —— 摘要正文用人名,群聊也能区分谁说的
       const tag = m.is_user ? '用户' : '角色';
       const who = m.is_user ? name1 || 'User' : m.name || name2 || 'Char';
-      return `【${tag}·${who}】${stripHtml(m.mes)}`;
+      // 先把时间标签转成可读文本再清洗,否则 stripHtml 会连同内部时间一起删掉
+      return `【${tag}·${who}】${stripHtml(inlineTimeTags(m.mes))}`;
     })
     .filter(Boolean)
     .join('\n\n');
@@ -164,7 +166,7 @@ export async function handleGenerationIntercept(
   type: string | undefined,
   abort: (immediately: boolean) => void,
 ): Promise<boolean> {
-  if (!apiSettings.enabled) return false;
+  if (!engineActiveHere()) return false; // 排除角色/总开关关:不拦
   if (!apiSettings.blockOnBacklog) return false;
   if (type !== 'normal') return false; // 只拦真正的新消息生成
 
@@ -214,7 +216,7 @@ async function afterSummaryHideAndInject(chat: STMessage[]): Promise<void> {
  */
 export async function checkAutoSummary(): Promise<void> {
   console.log('[柏宝书] checkAutoSummary(手动全量) 进入', { enabled: apiSettings.autoSummaryEnabled, busy });
-  if (!apiSettings.enabled) { console.log('[柏宝书] 早退:插件总开关关闭'); return; }
+  if (!engineActiveHere()) { console.log('[柏宝书] 早退:插件总开关关闭或当前角色被排除'); return; }
   if (!apiSettings.autoSummaryEnabled) { console.log('[柏宝书] 早退:自动摘要未开启'); return; }
   if (busy) { console.log('[柏宝书] 早退:busy 锁'); return; }
 
@@ -236,7 +238,7 @@ export async function checkAutoSummary(): Promise<void> {
  * 与自动触发解耦:不看 autoSummaryEnabled,只要总开关开着就执行;摘完跑收尾(隐藏+注入)。
  */
 export async function summarizeFloor(floor: number): Promise<void> {
-  if (!apiSettings.enabled) return;
+  if (!engineActiveHere()) return;
   if (busy) return;
   const ctx = getContext();
   if (!ctx) return;
@@ -256,7 +258,7 @@ export async function summarizeFloor(floor: number): Promise<void> {
  *    例:#0 开场白、#1 用户、#2 最新 AI,在 #2 翻页 → 跳过 #2 → 目标 #0。
  */
 export async function maybeSummarizePrevAi(skipLastAi: boolean): Promise<void> {
-  if (!apiSettings.enabled) return;
+  if (!engineActiveHere()) return;
   if (!apiSettings.autoSummaryEnabled) return;
   if (busy) return;
   const ctx = getContext();
@@ -408,7 +410,7 @@ async function syncWindowHiddenState(chat: STMessage[]): Promise<void> {
  */
 export async function runSummary(aiFloor: number): Promise<void> {
   console.log('[柏宝书] runSummary 楼层', aiFloor, '| busy =', busy);
-  if (!apiSettings.enabled) { console.log('[柏宝书] runSummary 早退:插件总开关关闭'); return; }
+  if (!engineActiveHere()) { console.log('[柏宝书] runSummary 早退:插件总开关关闭或当前角色被排除'); return; }
   if (busy) { console.log('[柏宝书] runSummary 早退:busy'); return; }
   const channel = getChannelForTask('summary');
   if (!channel) {
@@ -453,7 +455,7 @@ export async function runSummary(aiFloor: number): Promise<void> {
       time: stateBefore.state.time,
       location: stateBefore.state.location,
       items: stateBefore.items.map(i => ({ name: i.name, qty: i.qty, desc: i.desc })),
-      openPlans: openPlansOrdered.map(p => ({ kind: p.kind, content: p.content })),
+      openPlans: openPlansOrdered.map(p => ({ kind: p.kind, content: p.content, createdTime: p.createdTime, targetTime: p.targetTime })),
       history,
       content,
     });
@@ -477,11 +479,21 @@ export async function runSummary(aiFloor: number): Promise<void> {
 
     // 固化 delta(resolve 短序号→稳定 plan id),写成叶子挂到 AI 楼的 extra(随消息/swipe 跟随)
     const storedDelta = finalizeDelta(delta, openPlansOrdered);
+
+    // 时间:优先读正文里的 <bbs_start>/<bbs_end> 标签(权威锚点,与新剧情同源,不漂移);
+    // 取不到才降级用 AI 摘要里的 time 字段 / 既有状态时间。
+    const { start, end } = parseTimeRange(chat[aiFloor].mes);
+    const rangeLabel = formatRange(start, end);
+    // 状态当前时间(覆盖型):用结束时间(本段最后时刻);无标签则保留 AI 给的 time。
+    if (end) storedDelta.time = end;
+    // 展示用 timeLabel:有标签用时间段,否则回退单点
+    const timeLabel = rangeLabel || delta.time || memory.state.time || undefined;
+
     const leaf: LeafExtra = {
       id: makeLeafId(),
       text: delta.summary.trim(),
       delta: storedDelta,
-      timeLabel: delta.time || memory.state.time || undefined,
+      timeLabel,
       createdAt: Date.now(),
       srcHash: leafHash(chat[aiFloor].mes),
       v: 1,
@@ -556,11 +568,13 @@ function rootsAtLevel(level: number, chat: STMessage[]): { id: string; text: str
  * 用 AI 把这批的**叙事文本**融合成一条上层节点,childIds 收纳它们(底层全部保留)。
  * 一次调用会向上连锁(加叶子→可能生 L1→可能生 L2…),用同一套双阈值递归。
  */
-export async function checkResummary(): Promise<void> {
-  if (!apiSettings.enabled) return;
+export async function checkResummary(): Promise<number> {
+  if (!engineActiveHere()) return 0;
   const ctx = getContext();
-  if (!ctx) return;
+  if (!ctx) return 0;
   const chat = ctx.chat ?? [];
+
+  let made = 0; // 本次连锁共生成的总结条数
 
   // 最高现存压缩层级,作为连锁上限(+1 容纳新生成的层)
   const maxLevel = memory.summaries.reduce((m, s) => Math.max(m, s.level), 0);
@@ -575,7 +589,7 @@ export async function checkResummary(): Promise<void> {
     const channel = getChannelForTask('resummary');
     if (!channel) {
       engineState.lastError = '未指派"总结"副 API 渠道';
-      return;
+      return made;
     }
 
     const batch = roots.slice(0, threshold);
@@ -600,12 +614,33 @@ export async function checkResummary(): Promise<void> {
         auto: true,
         createdAt: newCreatedAt,
       });
+      made += 1;
       refreshInjection();
       // 不 break:继续外层 for,上一层可能也攒够了 → 连锁压更高层
     } catch (e) {
       engineState.lastError = e instanceof Error ? e.message : String(e);
-      return; // 本层失败则停止连锁,下次再试
+      return made; // 本层失败则停止连锁,下次再试
     }
+  }
+  return made;
+}
+
+/**
+ * 手动「立即检测并总结」:供摘要页按钮调用。
+ * 与自动路径同一套阈值/连锁逻辑(checkResummary),但带 busy 互斥,
+ * 避免与正在跑的摘要/总结撞车。返回新生成的总结条数(0 = 未达阈值,什么都没做)。
+ */
+export async function resummarizeNow(): Promise<number> {
+  if (!engineActiveHere()) return 0;
+  if (busy) return 0;
+  busy = true;
+  engineState.running = true;
+  engineState.lastError = '';
+  try {
+    return await checkResummary();
+  } finally {
+    busy = false;
+    engineState.running = false;
   }
 }
 
@@ -621,7 +656,7 @@ function reactToChatMutation(syncHidden = false): void {
     reactTimer = null;
     pruneBrokenComps(); // 叶子失效 → 删包含它的整条祖先压缩链
     recomputeDerived(); // 删叶/陈旧 → 物品/计划回退;UI(derivedMeta)更新
-    if (syncHidden && apiSettings.enabled && apiSettings.autoHide) {
+    if (syncHidden && engineActiveHere() && apiSettings.autoHide) {
       void syncWindowHiddenState(getContext()?.chat ?? [])
         .catch(e => {
           engineState.lastError = e instanceof Error ? e.message : String(e);
@@ -687,5 +722,14 @@ export function bindEngine(): void {
   watch(
     () => apiSettings.enabled,
     on => (on ? refreshInjection() : clearInjection()),
+  );
+
+  // 时间标签开关切换:同步 ST 隐藏正则的注册/移除,并刷新固定提示词注入。
+  watch(
+    () => apiSettings.timeTagEnabled,
+    () => {
+      syncTimeTagRegex();
+      refreshInjection();
+    },
   );
 }

@@ -46,19 +46,28 @@ export async function requestCompletion(
   if (!ctx) throw new ApiError('SillyTavern 上下文不可用');
   if (!channel.url || !channel.model) throw new ApiError('副 API 渠道未配置完整(缺 url 或 model)');
 
-  const body = {
+  const stream = channel.stream ?? false;
+  const body: Record<string, unknown> = {
     chat_completion_source: 'openai',
     reverse_proxy: normalizeUrl(channel.url),
     proxy_password: channel.key || '',
     model: channel.model,
     messages,
-    temperature: channel.temperature ?? 0.7,
-    max_tokens: channel.maxTokens ?? 4096,
-    stream: false,
+    temperature: channel.temperature ?? 1.0,
+    max_tokens: channel.maxTokens ?? 8192,
+    stream,
     // 静默:不影响主对话状态
     presence_penalty: 0,
     frequency_penalty: 0,
   };
+
+  // 排除参数:把用户指定的字段从 body 删掉,规避不接受这些参数的兼容端点报错。
+  // 注:固定路由字段(chat_completion_source/reverse_proxy 等)不应被删,但全凭用户填写,
+  // 这里只做忠实剔除——文案会提示填采样参数名(temperature/max_tokens/...)。
+  for (const p of channel.excludeParams ?? []) {
+    const key = p.trim();
+    if (key) delete body[key];
+  }
 
   const resp = await fetch(GENERATE_URL, {
     method: 'POST',
@@ -72,6 +81,13 @@ export async function requestCompletion(
     throw new ApiError(`副 API 请求失败 (${resp.status}): ${text.slice(0, 300)}`);
   }
 
+  // 流式:按 SSE 增量拼接;非流式:直接解析 JSON。
+  if (stream) {
+    const content = await readSseContent(resp);
+    if (!content) throw new ApiError('副 API 返回空内容');
+    return content;
+  }
+
   const data = await resp.json();
   if (data?.error) {
     throw new ApiError(data.error.message || '副 API 返回错误');
@@ -80,6 +96,46 @@ export async function requestCompletion(
   const content = extractContent(data);
   if (!content) throw new ApiError('副 API 返回空内容');
   return content;
+}
+
+/**
+ * 读取 SSE 流(text/event-stream),拼接 delta.content。
+ * ST 的 generate 端点在 stream=true 时透传上游 SSE:每行 `data: {json}`,以 `data: [DONE]` 结束。
+ */
+async function readSseContent(resp: Response): Promise<string> {
+  const reader = resp.body?.getReader();
+  if (!reader) {
+    // 无法流式读取(理论上不会):退回当作整体 JSON 处理
+    const data = await resp.json().catch(() => null);
+    return data ? extractContent(data) : '';
+  }
+  const decoder = new TextDecoder();
+  let buf = '';
+  let out = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // 按行解析,保留最后一段不完整的行到下次
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+    for (const line of lines) {
+      const t = line.trim();
+      if (!t || !t.startsWith('data:')) continue;
+      const payload = t.slice(5).trim();
+      if (payload === '[DONE]') continue;
+      try {
+        const json = JSON.parse(payload);
+        if (json?.error) throw new ApiError(json.error.message || '副 API 返回错误');
+        const delta = json?.choices?.[0]?.delta?.content ?? json?.choices?.[0]?.message?.content ?? json?.choices?.[0]?.text;
+        if (typeof delta === 'string') out += delta;
+      } catch (e) {
+        if (e instanceof ApiError) throw e;
+        // 单行解析失败忽略(可能是注释行/心跳)
+      }
+    }
+  }
+  return out.trim();
 }
 
 /** 从标准 OpenAI 响应体提取文本 */
