@@ -160,14 +160,14 @@ const BACKLOG_NOTICE_SENTINEL = '本次生成已拦截';
  * 生成拦截器:正常发消息前,若保留窗口外仍有未摘楼层(积压 >= 1)则中止本次生成,
  * 并用 /sendas 插一条提示楼,引导用户去摘要页补摘。
  * 只拦 type==='normal'(翻页/重生成/续写/安静生成都放行)。
- * 尊重总开关与 blockOnBacklog 开关;返回是否已拦截。
+ * 跟随「自动摘要」开关(不再独立);返回是否已拦截。
  */
 export async function handleGenerationIntercept(
   type: string | undefined,
   abort: (immediately: boolean) => void,
 ): Promise<boolean> {
   if (!engineActiveHere()) return false; // 排除角色/总开关关:不拦
-  if (!apiSettings.blockOnBacklog) return false;
+  if (!apiSettings.autoSummaryEnabled) return false; // 自动摘要关 → 积压拦截一并关
   if (type !== 'normal') return false; // 只拦真正的新消息生成
 
   const ctx = getContext();
@@ -202,11 +202,9 @@ export async function handleGenerationIntercept(
   return true;
 }
 
-/** 摘要后的统一收尾:同步滑动隐藏 + 刷新注入 */
+/** 摘要后的统一收尾:同步滑动隐藏 + 刷新注入(自动隐藏已并入摘要流程,不再有独立开关) */
 async function afterSummaryHideAndInject(chat: STMessage[]): Promise<void> {
-  if (apiSettings.autoHide) {
-    await syncWindowHiddenState(chat);
-  }
+  await syncWindowHiddenState(chat);
   refreshInjection();
 }
 
@@ -656,7 +654,7 @@ function reactToChatMutation(syncHidden = false): void {
     reactTimer = null;
     pruneBrokenComps(); // 叶子失效 → 删包含它的整条祖先压缩链
     recomputeDerived(); // 删叶/陈旧 → 物品/计划回退;UI(derivedMeta)更新
-    if (syncHidden && engineActiveHere() && apiSettings.autoHide) {
+    if (syncHidden && engineActiveHere() && apiSettings.autoSummaryEnabled) {
       void syncWindowHiddenState(getContext()?.chat ?? [])
         .catch(e => {
           engineState.lastError = e instanceof Error ? e.message : String(e);
@@ -724,9 +722,9 @@ export function bindEngine(): void {
     on => (on ? refreshInjection() : clearInjection()),
   );
 
-  // 时间标签开关切换:同步 ST 隐藏正则的注册/移除,并刷新固定提示词注入。
+  // 自动摘要开关切换:时间标签(隐藏正则 + 固定提示词)随它启停,不再独立开关。
   watch(
-    () => apiSettings.timeTagEnabled,
+    () => apiSettings.autoSummaryEnabled,
     () => {
       syncTimeTagRegex();
       refreshInjection();

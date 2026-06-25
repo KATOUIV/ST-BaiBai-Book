@@ -431,21 +431,7 @@ function insertMacro(token: string) {
           <span class="bbs-field-label">启用自动摘要</span>
           <input v-model="apiSettings.autoSummaryEnabled" type="checkbox" class="bbs-checkbox" />
         </label>
-        <label class="bbs-switch-row">
-          <span class="bbs-field-label">自动隐藏已摘要消息</span>
-          <input v-model="apiSettings.autoHide" type="checkbox" class="bbs-checkbox" />
-        </label>
-        <p class="bbs-field-hint">关闭后仅摘要、不隐藏原文。</p>
-        <label class="bbs-switch-row">
-          <span class="bbs-field-label">正文时间标签</span>
-          <input v-model="apiSettings.timeTagEnabled" type="checkbox" class="bbs-checkbox" />
-        </label>
-        <p class="bbs-field-hint">让 AI 在正文前后输出时间标签作为剧情时间锚点,标签仅显示层隐藏、不影响发送。</p>
-        <label class="bbs-switch-row">
-          <span class="bbs-field-label">积压过多时拦截发送</span>
-          <input v-model="apiSettings.blockOnBacklog" type="checkbox" class="bbs-checkbox" />
-        </label>
-        <p class="bbs-field-hint">保留窗口外仍有未摘楼层时拦截发送,提示先补摘,避免漏摘断层。</p>
+        <p class="bbs-field-hint">开启后自动摘要并隐藏旧楼,同时启用正文时间标签(剧情时间锚点)与积压拦截(漏摘时拦截发送、提示补摘)。</p>
         <label class="bbs-num-row">
           <span class="bbs-field-label">保留最近 AI 消息数</span>
           <input v-model.number="apiSettings.keepRecent" class="bbs-input bbs-num" type="number" min="0" />

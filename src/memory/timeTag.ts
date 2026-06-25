@@ -134,8 +134,9 @@ export function removeHideRegex(): void {
 /**
  * 同步时间标签功能的副作用(开关变化或启动时调用):
  *  - 开:注册隐藏正则;关:移除。提示词注入由 inject.ts 的 refreshInjection 负责。
+ * 跟随「自动摘要」开关(时间标签不再独立)。
  */
 export function syncTimeTagRegex(): void {
-  if (apiSettings.timeTagEnabled) ensureHideRegexRegistered();
+  if (apiSettings.autoSummaryEnabled) ensureHideRegexRegistered();
   else removeHideRegex();
 }

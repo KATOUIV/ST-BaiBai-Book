@@ -83,16 +83,10 @@ export interface ApiSettings {
   channels: ApiChannel[];
   /** 各任务指派的渠道 id */
   assignments: Record<TaskType, string>;
-  /** 自动摘要开关 */
+  /** 自动摘要开关。开启即一并启用:自动隐藏、正文时间标签、积压拦截(不再各自独立开关)。 */
   autoSummaryEnabled: boolean;
   /** 保留最近 N 条 AI 消息发全文(滑动窗口);更早的自动摘要并隐藏 */
   keepRecent: number;
-  /** 自动隐藏被摘要覆盖的消息 */
-  autoHide: boolean;
-  /** 时间标签:开启后向主对话注入固定提示词,要求每条正文前后输出 <bbs_start>/<bbs_end>,并自动注册隐藏正则 */
-  timeTagEnabled: boolean;
-  /** 积压拦截:发消息前若有 >=2 个已滑出窗口却仍未摘的楼,拦截本次生成并提示去补摘 */
-  blockOnBacklog: boolean;
   /** 排除的角色名:这些名字(含重名卡)的聊天里,记忆系统所有功能都不生效 */
   excludedChars: string[];
   /** 叶子摘要积累到 N 条时,压成一条 L1 总结(L0→L1 阈值,0=关闭) */
@@ -136,9 +130,6 @@ function defaults(): ApiSettings {
     assignments: { summary: '', resummary: '' },
     autoSummaryEnabled: false,
     keepRecent: 5,
-    autoHide: true,
-    timeTagEnabled: true,
-    blockOnBacklog: true,
     excludedChars: [],
     leafBatchThreshold: 12,
     resummaryThreshold: 7,
@@ -217,9 +208,6 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.assignments = src.assignments;
   target.autoSummaryEnabled = src.autoSummaryEnabled;
   target.keepRecent = src.keepRecent;
-  target.autoHide = src.autoHide;
-  target.timeTagEnabled = src.timeTagEnabled;
-  target.blockOnBacklog = src.blockOnBacklog;
   target.excludedChars = src.excludedChars;
   target.leafBatchThreshold = src.leafBatchThreshold;
   target.resummaryThreshold = src.resummaryThreshold;
