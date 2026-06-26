@@ -131,7 +131,7 @@ const windowStyle = computed(() => {
               </Transition>
             </main>
 
-            <NavBar v-if="navPlacement === 'bottom'" placement="bottom" />
+            <NavBar v-if="navPlacement === 'bottom'" placement="bottom" :narrow="narrowFlag" />
         </div>
       </div>
     </Transition>

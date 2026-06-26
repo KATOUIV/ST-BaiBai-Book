@@ -74,6 +74,29 @@ export interface STContext {
   /** 执行斜杠命令(如 /hide 0-3)。ST 稳定 API。 */
   executeSlashCommandsWithOptions?: (command: string, options?: Record<string, unknown>) => Promise<unknown>;
   /**
+   * 连接管理:用「当前选中的连接档」发请求(跟随主 API)。来源 extensions/shared.js。
+   * sendRequest(profileId, messages, maxTokens, custom, overridePayload):
+   *   custom.includePreset=false → 不套补全预设(只用该档的 API 信息);
+   *   custom.includeInstruct=false → 文本补全档也跳过 instruct 模板;
+   *   overridePayload 可塞 temperature 等采样参数(因为不走预设)。
+   *   extractData=true(默认)时返回 { content } 取文本。
+   */
+  ConnectionManagerRequestService?: {
+    sendRequest: (
+      profileId: string,
+      prompt: Array<{ role: string; content: string }> | string,
+      maxTokens: number,
+      custom?: {
+        stream?: boolean;
+        signal?: AbortSignal | null;
+        extractData?: boolean;
+        includePreset?: boolean;
+        includeInstruct?: boolean;
+      },
+      overridePayload?: Record<string, unknown>,
+    ) => Promise<unknown>;
+  };
+  /**
    * 按文本激活世界书条目(关键词触发 + constant 常驻)。ST 稳定 API(world-info.js)。
    * chat 为待扫描文本数组(由旧到新);isDryRun=true 仅扫描不触发副作用事件。
    */

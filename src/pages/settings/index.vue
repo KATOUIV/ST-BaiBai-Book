@@ -389,6 +389,12 @@ function insertMacro(token: string) {
             </button>
           </div>
         </div>
+
+        <label class="bbs-switch-row">
+          <span class="bbs-field-label">移动端点当前页导航关窗</span>
+          <input v-model="ui.navTapClose" type="checkbox" class="bbs-checkbox" />
+        </label>
+        <p class="bbs-field-hint">移动端再点一下当前所在页的导航按钮即可关闭整个窗口,省得去够右上角的 ×。怕误触可关。</p>
       </Collapsible>
 
       <!-- 副 API -->
@@ -398,18 +404,19 @@ function insertMacro(token: string) {
           <label class="bbs-assign-row">
             <span class="bbs-field-label">摘要使用</span>
             <select v-model="apiSettings.assignments.summary" class="bbs-input bbs-select">
-              <option value="">— 未指派 —</option>
+              <option value="">跟随主 API</option>
               <option v-for="c in apiSettings.channels" :key="c.id" :value="c.id">{{ c.name }}</option>
             </select>
           </label>
           <label class="bbs-assign-row">
             <span class="bbs-field-label">总结使用</span>
             <select v-model="apiSettings.assignments.resummary" class="bbs-input bbs-select">
-              <option value="">— 未指派 —</option>
+              <option value="">跟随主 API</option>
               <option v-for="c in apiSettings.channels" :key="c.id" :value="c.id">{{ c.name }}</option>
             </select>
           </label>
         </div>
+        <p class="bbs-field-hint">不指派渠道时跟随主 API:用当前选中的连接档的 API 信息执行,但不套用其补全预设(温度固定 1、最大 8192)。需在 ST「连接管理」里选中一个连接档。</p>
 
         <hr class="bbs-rule" />
 

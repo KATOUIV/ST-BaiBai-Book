@@ -69,6 +69,8 @@ export interface UiPrefs {
   theme: string;
   /** 导航位置:top/bottom/auto */
   navPosition: string;
+  /** 移动端:再点当前页导航按钮即关闭整窗。默认开;怕误触的用户可关。 */
+  navTapClose: boolean;
 }
 
 export interface ApiSettings {
@@ -117,7 +119,7 @@ function migrateLegacyUiPrefs(target: ApiSettings): void {
 function defaults(): ApiSettings {
   return {
     enabled: true,
-    ui: { theme: 'day', navPosition: 'auto' },
+    ui: { theme: 'day', navPosition: 'auto', navTapClose: true },
     prompts: { summary: '', resummary: '', jailbreak: '', timeTag: '' },
     vector: {
       enabled: false,
@@ -148,6 +150,7 @@ function normalize(raw: unknown): ApiSettings {
   merged.ui = {
     theme: typeof ru.theme === 'string' ? ru.theme : d.ui.theme,
     navPosition: typeof ru.navPosition === 'string' ? ru.navPosition : d.ui.navPosition,
+    navTapClose: typeof ru.navTapClose === 'boolean' ? ru.navTapClose : d.ui.navTapClose,
   };
   // excludedChars 必须是字符串数组,旧值类型不符时回退空数组
   merged.excludedChars = Array.isArray(merged.excludedChars)

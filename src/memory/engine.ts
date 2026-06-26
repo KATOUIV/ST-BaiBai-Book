@@ -1,8 +1,10 @@
 import type { ChatMsg } from '@/api/client';
-import { requestCompletion } from '@/api/client';
+import { mainApiAvailable, requestCompletion, requestViaMainApi } from '@/api/client';
 import { apiSettings, engineActiveHere, getChannelForTask } from '@/api/settings';
+import type { TaskType } from '@/api/settings';
 import type { STMessage } from '@/st/context';
 import { getContext } from '@/st/context';
+import { toast } from '@/st/toast';
 import { addSummary, deriveMemory, finalizeDelta, getLeaf, leafHash, leafValid, makeLeafId, pruneBrokenComps, stripHtml } from './apply';
 import { extractJsonObject } from './json';
 import { clearInjection, refreshInjection, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
@@ -20,6 +22,12 @@ export const engineState = reactive({
 });
 
 let busy = false;
+// 当前在飞的摘要完成信号:拦截器可 await 它(成功/失败都 resolve,永不 reject,故不会卡死生成)。
+// 无在飞摘要时为 null。在 runSummary 头尾维护。
+let currentRun: Promise<void> | null = null;
+export function currentSummaryPromise(): Promise<void> | null {
+  return currentRun;
+}
 
 /** 把消息渲染成给摘要模型的文本(stripHtml 复用 apply 的清洗,与 leafHash 一致) */
 function renderMessages(chat: STMessage[], indices: number[], name1: string, name2: string): string {
@@ -145,40 +153,75 @@ export function pendingAiFloors(chat: STMessage[]): number[] {
 }
 
 /**
- * 「积压」楼层:已滑出保留窗口(< keepStart)、却仍没有有效叶子的 AI 楼。
- * 这才是真正漏摘的部分——最近 keepRecent 条本就发全文、最后才摘,不算积压,
- * 否则正常使用每轮都会有 1 条「最新待摘」而被误判。
+ * 「洞」楼层:违反核心不变式「除最后一条 AI 外,其余 AI 楼都必须有有效摘要」的待摘 AI 楼。
+ * = 末尾 AI 楼之前的所有待摘 AI 楼。末尾那条豁免——它刚定稿、本就还没摘,属正常待摘而非洞。
+ *
+ * 这是生成拦截的判据(见 handleGenerationIntercept)。注意:**不看保留窗口(keepRecent)**——
+ * 窗口内的中间洞(如某楼摘要失败、或手动删了某楼摘要)同样破坏不变式,必须拦,
+ * 否则后发的楼会在「前面缺摘」时照常生成,导致状态/计划注入错位(D2 注入位置假设了此不变式)。
  */
-export function backlogFloors(chat: STMessage[]): number[] {
-  const keepStart = resolveKeepStart(chat);
-  return pendingAiFloors(chat).filter(i => i < keepStart);
+export function holesExceptLast(chat: STMessage[]): number[] {
+  let lastAi = -1;
+  for (let i = chat.length - 1; i >= 0; i--) {
+    if (isAiFloor(chat[i])) { lastAi = i; break; }
+  }
+  if (lastAi < 0) return [];
+  return pendingAiFloors(chat).filter(i => i < lastAi);
 }
 
 // 提示楼正文里的固定句,既给用户看,也用作「末楼是否已是本提示楼」的去重哨兵
 const BACKLOG_NOTICE_SENTINEL = '本次生成已拦截';
 
 /**
- * 生成拦截器:正常发消息前,若保留窗口外仍有未摘楼层(积压 >= 1)则中止本次生成,
- * 并用 /sendas 插一条提示楼,引导用户去摘要页补摘。
- * 只拦 type==='normal'(翻页/重生成/续写/安静生成都放行)。
- * 跟随「自动摘要」开关(不再独立);返回是否已拦截。
+ * 生成拦截器:每次「产出新正文」的生成前,守住不变式「除最后一条 AI 外其余都必须有摘要」。
+ * 判据 = holesExceptLast(末尾 AI 之前的待摘楼层),按数量分流:
+ *  - 0 个 → 放行。
+ *  - 恰好 1 个 → 看那唯一的洞是否正在后台生成摘要(currentRun 非空):
+ *      · 在飞 → toast 提示并 await 它结束(promise 永不 reject,不会卡死);完成后重判,洞填上则放行,否则拦截。
+ *      · 不在飞 → 直接拦截(后台没在补它,等也没意义)。
+ *  - >1 个 → 直接拦截(不等待;多个洞交给后台 maybeSummarizePrevAi「最早优先」逐条补,用户补完再重发)。
+ * 拦截 = abort(true) + /sendas 插提示楼。
+ *
+ * 关键时序/口径(改前务必理解,否则极易复发并行 bug):
+ *  1) type 口径必须与摘要触发(bindEngine 里 GENERATION_STARTED 监听器)一致——都放行
+ *     continue/quiet/impersonate、都管 normal/regenerate/swipe。否则重生/翻页时「补摘」与「生成」会并行。
+ *  2) GENERATION_STARTED(触发 maybeSummarizePrevAi)在 ST 中先于本拦截器 emit,且 maybeSummarizePrevAi
+ *     到 runSummary 之间是同步代码、runSummary 同步置好 currentRun → 本拦截器跑时已能读到「在飞」信号。
+ *  3) ST 会 await 本拦截器(script.js runGenerationInterceptors),故 await 能真正阻塞生成;
+ *     且拦截器在 prompt 组装之前跑,摘要落盘后,后续组装阶段的注入自然带上新数据。
+ * 跟随「自动摘要」开关:关了则一并不拦。
  */
 export async function handleGenerationIntercept(
   type: string | undefined,
   abort: (immediately: boolean) => void,
 ): Promise<boolean> {
   if (!engineActiveHere()) return false; // 排除角色/总开关关:不拦
-  if (!apiSettings.autoSummaryEnabled) return false; // 自动摘要关 → 积压拦截一并关
-  if (type !== 'normal') return false; // 只拦真正的新消息生成
+  if (!apiSettings.autoSummaryEnabled) return false; // 自动摘要关 → 拦截一并关
+  // 要产出新正文的生成才拦:normal(发消息)/regenerate(重新生成)/swipe(翻页)。
+  // 与摘要触发(GENERATION_STARTED 监听器)同口径,否则重生/翻页时「补摘」与「生成」会并行。
+  // continue(续写)/quiet(安静)/impersonate(扮演)放行,不该被洞挡。
+  if (type === 'continue' || type === 'quiet' || type === 'impersonate') return false;
 
   const ctx = getContext();
   if (!ctx) return false;
   if (!ctx.getCurrentChatId?.()) return false; // 欢迎页:无聊天不拦
   const chat = ctx.chat ?? [];
-  const backlog = backlogFloors(chat);
-  if (backlog.length < 1) return false;
 
-  abort(true); // 立即中止,后续拦截器也不再跑
+  let holes = holesExceptLast(chat);
+  if (holes.length < 1) return false; // 无洞:放行
+
+  // 恰好 1 个洞,且它正在后台生成 → 等它,等完重判(成功放行 / 失败落到拦截)。
+  if (holes.length === 1) {
+    const inflight = currentSummaryPromise();
+    if (inflight) {
+      toast('正在补摘前一楼层,请稍候…', 'info');
+      await inflight;
+      holes = holesExceptLast(chat);
+      if (holes.length < 1) return false; // 补完,洞没了 → 放行
+    }
+  }
+
+  abort(true); // 仍有洞(>1,或那唯一的洞没在飞/补失败):立即中止
 
   // 去重:末楼已是本提示楼就不再重复插(连点发送不刷屏)
   const last = chat[chat.length - 1];
@@ -191,7 +234,7 @@ export async function handleGenerationIntercept(
     // 多行靠 {{newline}} 宏(sendMessageAs 走 substituteParams 会还原成换行)
     const text = [
       '[柏宝书]',
-      `前面存在过多楼层未生成摘要(${backlog.length} 层),为保证剧情连续性,请先在柏宝书界面的摘要页里,点击未摘要楼层的楼层号进行生成摘要。`,
+      `前面存在未生成摘要的楼层(${holes.length} 层),已拦截本次生成。请等待后台补摘完成(或在柏宝书摘要页点未摘要楼层号手动补摘),完成后再重新发送。`,
       BACKLOG_NOTICE_SENTINEL,
     ].join('{{newline}}');
     try {
@@ -248,13 +291,14 @@ export async function summarizeFloor(floor: number): Promise<void> {
 }
 
 /**
- * 自动触发的单楼增量摘要:只确保「上一条已定稿 AI 消息」有摘要,且只摘那一条。
- * @param skipLastAi true 时跳过正在操作的末尾 AI 消息(翻页/重新生成场景),取它之前的那条 AI。
+ * 自动触发的单楼增量摘要:**最早待摘优先**,一次只摘一条。
+ * @param skipLastAi true 时跳过正在操作的末尾 AI 消息(翻页/重新生成场景),它不参与目标选取。
  *
- * 规则(对齐用户语义):
- *  - 发消息:目标 = 最后一条 AI 消息(它刚定稿)。skipLastAi=false。
- *  - 翻页/重新生成:末尾 AI 正在被改写(易变),跳过它,目标 = 之前那条 AI。skipLastAi=true。
- *    例:#0 开场白、#1 用户、#2 最新 AI,在 #2 翻页 → 跳过 #2 → 目标 #0。
+ * 不变式:除最后一条 AI 外,其余 AI 楼都应有摘要。为此目标取「可摘范围内最早的待摘 AI 楼」,
+ * 而非「上一条」——否则前面有失败楼(洞)时,新楼会越过它先摘,导致倒序(计划漏删等)。
+ *  - 发消息:可摘范围 = 直到最后一条 AI 楼。skipLastAi=false。
+ *  - 翻页/重新生成:末尾 AI 正在被改写,排除它,范围 = 直到之前那条 AI。skipLastAi=true。
+ * 配合生成拦截(有洞且未补完前不放行),每轮补一条也不会让洞越积越多。
  */
 export async function maybeSummarizePrevAi(skipLastAi: boolean): Promise<void> {
   if (!engineActiveHere()) return;
@@ -265,10 +309,12 @@ export async function maybeSummarizePrevAi(skipLastAi: boolean): Promise<void> {
   const chat = ctx.chat ?? [];
   if (chat.length === 0) return;
 
-  const target = prevAiFloor(chat, skipLastAi);
-  if (target < 0) return; // 没有可摘的「上一条 AI」
-  if (leafValid(chat[target])) {
-    // 上一条 AI 已有有效摘要 → 无需重摘,但仍跑收尾(隐藏窗口可能变化)
+  // 可摘范围上界:发消息=最后一条 AI;翻页/重生=之前那条 AI(末尾易变,排除)。
+  const ceiling = prevAiFloor(chat, skipLastAi);
+  if (ceiling < 0) return;
+  // 范围内最早的待摘 AI 楼(洞优先);没有则仅跑收尾(隐藏窗口可能变化)。
+  const target = pendingAiFloors(chat).find(f => f <= ceiling);
+  if (target === undefined) {
     await afterSummaryHideAndInject(chat);
     return;
   }
@@ -407,21 +453,55 @@ async function syncWindowHiddenState(chat: STMessage[]): Promise<void> {
  * 上下文:为了让摘要连贯,把该 AI 楼层连同它前面紧邻的、尚未覆盖的用户发言一起喂给模型,
  * 但只把这一个 AI 楼层(及其前置用户楼层)标记为已覆盖。
  */
-export async function runSummary(aiFloor: number): Promise<void> {
+/**
+ * 解析某摘要任务实际怎么发请求:
+ *  - 指派了副 API 渠道 → 用该渠道(requestCompletion);
+ *  - 未指派(空)→ 跟随主 API(当前连接档,requestViaMainApi),只用其 API 信息、不套预设。
+ * 主 API 也不可用(没连接管理/没选档)时返回 error,调用方据此早退并写 lastError。
+ */
+function resolveSender(
+  task: TaskType,
+): { send: (messages: ChatMsg[]) => Promise<string>; label: string } | { error: string } {
+  const channel = getChannelForTask(task);
+  if (channel) {
+    return { send: messages => requestCompletion(channel, messages), label: `渠道「${channel.name}」(${channel.model})` };
+  }
+  if (!mainApiAvailable()) {
+    return { error: '未指派副 API 渠道,且无法跟随主 API(请在 ST 连接管理里选一个连接档,或为本任务单独指派渠道)' };
+  }
+  return { send: messages => requestViaMainApi(messages), label: '主 API(当前连接档)' };
+}
+
+/**
+ * 单楼摘要。对外包一层,维护「当前在飞摘要」信号 currentRun,供生成拦截器 await(见 handleGenerationIntercept)。
+ *  - currentRun 同步置为本次 promise → 拦截器在 GENERATION_STARTED(触发摘要)之后跑时已能读到它。
+ *  - finally 里清回 null(只清自己,避免清掉后一次调用设的新 promise)。
+ *  - 真正的请求/落盘在 runSummaryInner;它内部已 try/catch,promise 永不 reject → 拦截器 await 不会卡死。
+ * 注:早退(busy/非 AI 楼等)也会经历「置 p → 立即 finally 清回 null」,只是 p 几乎瞬间 resolve,不构成有效在飞。
+ */
+export function runSummary(aiFloor: number): Promise<void> {
+  const p = runSummaryInner(aiFloor).finally(() => {
+    if (currentRun === p) currentRun = null;
+  });
+  currentRun = p;
+  return p;
+}
+
+async function runSummaryInner(aiFloor: number): Promise<void> {
   console.log('[柏宝书] runSummary 楼层', aiFloor, '| busy =', busy);
   if (!engineActiveHere()) { console.log('[柏宝书] runSummary 早退:插件总开关关闭或当前角色被排除'); return; }
   if (busy) { console.log('[柏宝书] runSummary 早退:busy'); return; }
-  const channel = getChannelForTask('summary');
-  if (!channel) {
-    engineState.lastError = '未指派"摘要"副 API 渠道';
-    console.log('[柏宝书] runSummary 早退:摘要渠道未指派');
+  const sender = resolveSender('summary');
+  if ('error' in sender) {
+    engineState.lastError = sender.error;
+    console.log('[柏宝书] runSummary 早退:', sender.error);
     return;
   }
   const ctx = getContext();
   if (!ctx) return;
   const chat = ctx.chat ?? [];
   if (!isAiFloor(chat[aiFloor])) { console.log('[柏宝书] runSummary 早退:非 AI 楼', aiFloor); return; }
-  console.log('[柏宝书] runSummary 即将发请求,渠道 =', channel.name, 'model =', channel.model);
+  console.log('[柏宝书] runSummary 即将发请求,', sender.label);
 
   // 覆盖范围(喂模型的上下文):本 AI 楼层 + 它前面紧邻的、尚未覆盖的(用户)楼层
   const covered = coveredSet(chat);
@@ -476,7 +556,8 @@ export async function runSummary(aiFloor: number): Promise<void> {
       { role: 'system', content: THINKING_CHECKLIST },
       { role: 'assistant', content: THINKING_PREFILL },
     );
-    const raw = await requestCompletion(channel, messages);
+    const raw = await sender.send(messages);
+    console.log('[柏宝书] 摘要原始返回(未清洗):\n', raw);
     const delta = extractJsonObject<SummaryDelta>(raw);
     if (!delta || !delta.summary) {
       throw new Error('摘要解析失败:未得到有效 JSON 或缺 summary 字段');
@@ -598,9 +679,9 @@ export async function checkResummary(): Promise<number> {
     const roots = rootsAtLevel(level, chat);
     if (roots.length < threshold) continue;
 
-    const channel = getChannelForTask('resummary');
-    if (!channel) {
-      engineState.lastError = '未指派"总结"副 API 渠道';
+    const sender = resolveSender('resummary');
+    if ('error' in sender) {
+      engineState.lastError = sender.error;
       return made;
     }
 
@@ -613,7 +694,8 @@ export async function checkResummary(): Promise<number> {
       const messages: ChatMsg[] = [];
       if (jb) messages.push({ role: 'system', content: jb });
       messages.push({ role: 'user', content: prompt });
-      const raw = await requestCompletion(channel, messages);
+      const raw = await sender.send(messages);
+      console.log('[柏宝书] 总结原始返回(未清洗):\n', raw);
       const delta = extractJsonObject<{ summary?: string }>(raw);
       if (!delta?.summary) throw new Error('总结解析失败');
 
@@ -709,6 +791,8 @@ export function bindEngine(): void {
   });
 
   // 重新生成 / 翻页:GENERATION_STARTED 时末尾 AI 即将被改写(易变),跳过它,摘之前那条 AI。
+  // ⚠️ 这里放行的 type(quiet/impersonate/continue)必须与 handleGenerationIntercept 第一道闸严格一致——
+  //    两者口径一旦不同步,重生/翻页会出现「补摘」与「正文生成」并行(见拦截器注释的「关键时序/口径」)。
   if (et.GENERATION_STARTED) {
     es.on(et.GENERATION_STARTED, (type?: string, _opts?: unknown, dryRun?: boolean) => {
       if (dryRun) return;

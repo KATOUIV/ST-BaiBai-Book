@@ -1,9 +1,19 @@
 <script setup lang="ts">
 import Icon from '@/components/Icon.vue';
 import { PAGES } from '@/pages/registry';
-import { ui } from '@/state/ui';
+import { closeBook, ui } from '@/state/ui';
 
-defineProps<{ placement: 'top' | 'bottom' }>();
+const props = defineProps<{ placement: 'top' | 'bottom'; narrow?: boolean }>();
+
+// 移动端:再点一下当前页的导航按钮即关闭整窗(省得去够右上角的 ×);非当前页正常切页。
+// 受 ui.navTapClose 开关控制(默认开,怕误触的用户可在设置里关)。
+function onNavClick(id: string) {
+  if (props.narrow && ui.navTapClose && ui.activePage === id) {
+    closeBook();
+    return;
+  }
+  ui.activePage = id;
+}
 </script>
 
 <template>
@@ -17,7 +27,7 @@ defineProps<{ placement: 'top' | 'bottom' }>();
       :title="p.label"
       :aria-label="p.label"
       :aria-current="ui.activePage === p.id ? 'page' : undefined"
-      @click="ui.activePage = p.id"
+      @click="onNavClick(p.id)"
     >
       <Icon :name="p.id" class="bbs-nav-icon" />
       <!-- 底部导航仅图标,顶部带文字 -->
