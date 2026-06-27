@@ -550,7 +550,7 @@ function scorePct(score: number): number {
             </select>
           </label>
         </div>
-        <p class="bbs-field-hint">不指派渠道时跟随主 API:用当前选中的连接档的 API 信息执行,但不套用其补全预设(温度固定 1、最大 8192)。需在 ST「连接管理」里选中一个连接档。</p>
+        <p class="bbs-field-hint">不指派渠道时跟随主 API:直接借用你主界面当前正在用的 API(聊天补全/文本补全)执行摘要,无需额外配置。想用不同模型再在下方建副渠道指派。</p>
 
         <hr class="bbs-rule" />
 

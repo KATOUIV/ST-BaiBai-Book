@@ -458,8 +458,8 @@ async function syncWindowHiddenState(chat: STMessage[]): Promise<void> {
 /**
  * 解析某摘要任务实际怎么发请求:
  *  - 指派了副 API 渠道 → 用该渠道(requestCompletion);
- *  - 未指派(空)→ 跟随主 API(当前连接档,requestViaMainApi),只用其 API 信息、不套预设。
- * 主 API 也不可用(没连接管理/没选档)时返回 error,调用方据此早退并写 lastError。
+ *  - 未指派(空)→ 跟随主 API(requestViaMainApi → generateRaw,用主界面当前在用的 API,不带聊天历史)。
+ * 主 API 也不可用(ST 无 generateRaw)时返回 error,调用方据此早退并写 lastError。
  */
 function resolveSender(
   task: TaskType,
@@ -469,9 +469,9 @@ function resolveSender(
     return { send: messages => requestCompletion(channel, messages), label: `渠道「${channel.name}」(${channel.model})` };
   }
   if (!mainApiAvailable()) {
-    return { error: '未指派副 API 渠道,且无法跟随主 API(请在 ST 连接管理里选一个连接档,或为本任务单独指派渠道)' };
+    return { error: '未指派副 API 渠道,且当前主 API 不可用(请填好主 API 后重试,或为本任务单独指派渠道)' };
   }
-  return { send: messages => requestViaMainApi(messages), label: '主 API(当前连接档)' };
+  return { send: messages => requestViaMainApi(messages), label: '主 API(主界面当前在用)' };
 }
 
 /**

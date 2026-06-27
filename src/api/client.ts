@@ -148,49 +148,30 @@ function extractContent(data: any): string {
   ).trim();
 }
 
-/* ============ 跟随主 API(当前连接档) ============ */
+/* ============ 跟随主 API(主界面当前在用的 API 设置) ============ */
 
-/** 不走预设时给摘要/总结用的固定采样参数(预设里的 temperature 等被 includePreset:false 跳过,这里补默认值) */
-const MAIN_API_TEMPERATURE = 1.0;
-const MAIN_API_MAX_TOKENS = 8192;
+/** 摘要/总结跟随主 API 时的响应上限:够装下思维链 + JSON,避免被主 API 默认 max tokens 截断。 */
+const MAIN_API_RESPONSE_LENGTH = 8192;
 
-/** ST 连接管理当前选中的连接档 id;没有连接管理 / 未选档时返回 null。 */
-export function selectedProfileId(): string | null {
-  const cm = (getContext()?.extensionSettings?.connectionManager ?? null) as
-    | { selectedProfile?: string | null }
-    | null;
-  const id = cm?.selectedProfile;
-  return typeof id === 'string' && id ? id : null;
-}
-
-/** 是否具备「跟随主 API」的条件(连接管理可用且已选中一个连接档)。设置页/引擎据此判断空指派能否回退。 */
+/**
+ * 是否具备「跟随主 API」的条件:ST 暴露了 generateRaw(稳定 API)即可。
+ * 不再依赖连接管理/连接档——直接借用主界面当前正在用的 API。
+ */
 export function mainApiAvailable(): boolean {
-  return typeof getContext()?.ConnectionManagerRequestService?.sendRequest === 'function' && !!selectedProfileId();
+  return typeof getContext()?.generateRaw === 'function';
 }
 
 /**
- * 用「当前连接档」(主 API 信息)发一次补全,只用其 API 信息、不套补全预设/instruct 模板。
- * 采样参数由 overridePayload 显式给(temperature=1 / max_tokens=8192),保证摘要可控且与预设解耦。
- * 非流式,返回文本;失败抛 ApiError。
+ * 用「当前主 API」(主界面正在用的聊天补全/文本补全设置)发一次补全。
+ * 走 ST 的 generateRaw:只发我们给的这几条消息,不带聊天历史/角色卡;无需连接档。
+ * quiet 类型内部强制非流式,返回清洗后的整段文本;失败抛 ApiError。
  */
-export async function requestViaMainApi(messages: ChatMsg[], opts: RequestOptions = {}): Promise<string> {
+export async function requestViaMainApi(messages: ChatMsg[], _opts: RequestOptions = {}): Promise<string> {
   const ctx = getContext();
-  const svc = ctx?.ConnectionManagerRequestService;
-  if (typeof svc?.sendRequest !== 'function') {
-    throw new ApiError('未启用连接管理(Connection Manager),无法跟随主 API');
+  if (typeof ctx?.generateRaw !== 'function') {
+    throw new ApiError('当前 ST 版本不支持 generateRaw,无法跟随主 API');
   }
-  const profileId = selectedProfileId();
-  if (!profileId) throw new ApiError('未选中连接档,请在 ST 连接管理里选一个,或为本任务单独指派渠道');
-
-  const data = await svc.sendRequest(
-    profileId,
-    messages,
-    MAIN_API_MAX_TOKENS,
-    { stream: false, signal: opts.signal ?? null, extractData: true, includePreset: false, includeInstruct: false },
-    { temperature: MAIN_API_TEMPERATURE },
-  );
-
-  const content = extractContent(data);
+  const content = (await ctx.generateRaw({ prompt: messages, responseLength: MAIN_API_RESPONSE_LENGTH }))?.trim();
   if (!content) throw new ApiError('主 API 返回空内容');
   return content;
 }

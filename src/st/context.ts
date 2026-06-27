@@ -99,6 +99,19 @@ export interface STContext {
     ) => Promise<unknown>;
   };
   /**
+   * 用「当前主 API」(主界面正在用的聊天补全/文本补全设置)发一次性补全。来源 script.js,ST 稳定 API。
+   * prompt 传消息数组时只发这些消息、不带聊天历史/角色卡;api 缺省=main_api(用户当前主 API)。
+   * 内部走 sendOpenAIRequest('quiet', …),quiet 强制非流式,返回清洗后的整段文本。
+   */
+  generateRaw?: (params: {
+    prompt: Array<{ role: string; content: string }> | string;
+    api?: string | null;
+    systemPrompt?: string;
+    responseLength?: number | null;
+    prefill?: string;
+    jsonSchema?: unknown;
+  }) => Promise<string>;
+  /**
    * 按文本激活世界书条目(关键词触发 + constant 常驻)。ST 稳定 API(world-info.js)。
    * chat 为待扫描文本数组(由旧到新);isDryRun=true 仅扫描不触发副作用事件。
    */
