@@ -111,6 +111,8 @@ export interface STContext {
     prefill?: string;
     jsonSchema?: unknown;
   }) => Promise<string>;
+  /** 展开 {{char}}/{{user}} 等宏。摘要带角色卡描述时,字段里可能含宏,需用它还原。ST 稳定 API。 */
+  substituteParams?: (content: string) => string;
   /**
    * 按文本激活世界书条目(关键词触发 + constant 常驻)。ST 稳定 API(world-info.js)。
    * chat 为待扫描文本数组(由旧到新);isDryRun=true 仅扫描不触发副作用事件。

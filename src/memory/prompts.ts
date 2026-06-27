@@ -364,6 +364,17 @@ export function buildWorldInfoSystem(worldInfo: string): string {
 ${worldInfo.trim()}`;
 }
 
+/**
+ * 把角色卡描述包成独立 system 消息(有些卡人设写在角色描述而非世界书里,摘要也需据此理解角色)。
+ * 字段已由调用方展开宏并按非空拼好;空则调用方应跳过本块。
+ */
+export function buildCharCardSystem(charCard: string): string {
+  return `【角色设定(角色卡设定,只读参考)】
+以下是当前角色的人物设定,用于帮助你理解角色言行;它不是本轮发生的事,不要写进 summary。
+
+${charCard.trim()}`;
+}
+
 /* ============ 思维链(机制照搬 Horae,字段适配 BaiBai 的 JSON) ============ */
 
 /**

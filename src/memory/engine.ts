@@ -8,7 +8,7 @@ import { toast } from '@/st/toast';
 import { addSummary, deriveMemory, finalizeDelta, getLeaf, itemChangesOf, leafValid, makeLeafId, pruneBrokenComps, stripHtml, syncItemLogFromMessage } from './apply';
 import { extractJsonObject } from './json';
 import { clearInjection, refreshInjection, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
-import { buildResummaryPrompt, buildSummaryPrompt, buildWorldInfoSystem, fmtItemLogInline, JAILBREAK_PROMPT, THINKING_CHECKLIST, THINKING_PREFILL } from './prompts';
+import { buildCharCardSystem, buildResummaryPrompt, buildSummaryPrompt, buildWorldInfoSystem, fmtItemLogInline, JAILBREAK_PROMPT, THINKING_CHECKLIST, THINKING_PREFILL } from './prompts';
 import { clampToTimeTags, inlineTimeTags, parseTimeRange, syncTimeTagRegex, writeItemLogTag } from './timeTag';
 import { memory, recomputeDerived, scheduleLeafFlush } from './store';
 import type { LeafExtra, SummaryDelta } from './types';
@@ -102,6 +102,35 @@ async function fetchWorldInfo(chat: STMessage[], targets: number[], name1: strin
     console.log('[柏宝书] 世界书激活失败(降级为不带设定):', e);
     return '';
   }
+}
+
+/**
+ * 取当前角色卡的人设字段(description / personality / scenario)。
+ * 有些卡把人设写在角色描述而非世界书里,摘要也需据此理解角色言行。
+ *   - 三个字段都尝试,空的自动跳过(现代卡常只填 description);
+ *   - 字段里可能含 {{char}}/{{user}} 宏,用 substituteParams 展开;
+ *   - 群聊(characterId 为空)暂不带——多成员合并逻辑复杂,后续再做。
+ * 取不到角色 / 全空 → 返回空串(降级,不影响摘要)。
+ */
+function fetchCharCard(): string {
+  const ctx = getContext();
+  if (!ctx || ctx.groupId) return ''; // 群聊暂不带
+  const idx = ctx.characterId;
+  if (idx === undefined || idx === null || idx === '') return '';
+  const ch = ctx.characters?.[Number(idx)] as Record<string, unknown> | undefined;
+  if (!ch) return '';
+  const sub = typeof ctx.substituteParams === 'function' ? ctx.substituteParams : (s: string) => s;
+  const fields: Array<[string, string]> = [
+    ['描述', String(ch.description ?? '')],
+    ['性格', String(ch.personality ?? '')],
+    ['情景', String(ch.scenario ?? '')],
+  ];
+  const parts: string[] = [];
+  for (const [label, raw] of fields) {
+    const t = sub(raw).trim();
+    if (t) parts.push(`【${label}】\n${t}`);
+  }
+  return parts.join('\n\n').trim();
 }
 
 /**
@@ -532,6 +561,8 @@ async function runSummaryInner(aiFloor: number): Promise<void> {
 
     // 世界书:按本轮文本激活相关条目(含 constant 常驻),给摘要模型设定依据,避免与世界观矛盾
     const worldInfo = await fetchWorldInfo(chat, targets, ctx.name1, ctx.name2);
+    // 角色卡描述:有些卡人设写在角色描述而非世界书里,一并带上(空/群聊自动跳过)
+    const charCard = fetchCharCard();
 
     // 未了结计划的有序列表:顺序即提示词里的 p1/p2…,用于把 AI 的 resolve 短序号翻译成稳定 id
     const openPlansOrdered = stateBefore.plans.filter(p => p.status === 'open');
@@ -549,11 +580,12 @@ async function runSummaryInner(aiFloor: number): Promise<void> {
       hasTimeTags,
     });
 
-    // 组装:破限(置顶)→ 世界设定(独立 system,有才加)→ 主提示 → 思考清单 → assistant 预填。
+    // 组装:破限(置顶)→ 角色设定 + 世界设定(各独立 system,有才加)→ 主提示 → 思考清单 → assistant 预填。
     // 破限留空=用内置默认(与摘要/总结提示词同一回退语义);确实不想要可在设置里删成默认后再清。
     const messages: ChatMsg[] = [];
     const jb = apiSettings.prompts.jailbreak.trim() || JAILBREAK_PROMPT;
     if (jb) messages.push({ role: 'system', content: jb });
+    if (charCard) messages.push({ role: 'system', content: buildCharCardSystem(charCard) });
     if (worldInfo) messages.push({ role: 'system', content: buildWorldInfoSystem(worldInfo) });
     messages.push(
       { role: 'user', content: prompt },
