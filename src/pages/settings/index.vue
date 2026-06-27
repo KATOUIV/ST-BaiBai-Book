@@ -590,6 +590,14 @@ function scorePct(score: number): number {
         </label>
         <p class="bbs-field-hint">开启后自动摘要并隐藏旧楼,同时启用正文时间标签(剧情时间锚点)与积压拦截(漏摘时拦截发送、提示补摘)。</p>
         <label class="bbs-num-row">
+          <span class="bbs-field-label">字数档位</span>
+          <select v-model="apiSettings.verbosity" class="bbs-input bbs-select bbs-select-narrow">
+            <option value="detailed">详细</option>
+            <option value="concise">精简</option>
+          </select>
+        </label>
+        <p class="bbs-field-hint">一键调节摘要/总结/二次总结的目标字数。详细=信息全(摘要150-300、总结300-500字)；精简=省token(摘要80-150、总结150-300字)。仅影响内置提示词,自定义模板不受影响。</p>
+        <label class="bbs-num-row">
           <span class="bbs-field-label">保留最近 AI 消息数</span>
           <input v-model.number="apiSettings.keepRecent" class="bbs-input bbs-num" type="number" min="0" />
         </label>
@@ -1496,6 +1504,12 @@ function scorePct(score: number): number {
 .bbs-num {
   max-width: 110px;
   text-align: right;
+}
+/* 短选项下拉(如字数档位):贴合文字的窄宽,和右侧数字框对齐,不再撑满半行 */
+.bbs-select-narrow {
+  width: auto;
+  min-width: 65px;
+  max-width: 150px;
 }
 
 /* —— 总开关主控卡 —— */

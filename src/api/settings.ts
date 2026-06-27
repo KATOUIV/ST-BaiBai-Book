@@ -103,6 +103,9 @@ export interface UiPrefs {
   navTapClose: boolean;
 }
 
+/** 字数详尽档位:detailed=详细(默认),concise=精简(摘要/总结/二次总结字数一并降低)。仅影响内置模板。 */
+export type Verbosity = 'detailed' | 'concise';
+
 export interface ApiSettings {
   /** 插件总开关。关闭后停止一切自动注入/摘要/总结/隐藏;ST 菜单入口仍在,可重新打开界面再开启。 */
   enabled: boolean;
@@ -110,6 +113,8 @@ export interface ApiSettings {
   ui: UiPrefs;
   /** 自定义提示词模板(空=用内置) */
   prompts: CustomPrompts;
+  /** 内置模板的字数详尽档位:详细/精简。自定义模板不受影响。 */
+  verbosity: Verbosity;
   /** 向量记忆配置 */
   vector: VectorSettings;
   channels: ApiChannel[];
@@ -151,6 +156,7 @@ function defaults(): ApiSettings {
     enabled: true,
     ui: { theme: 'day', navPosition: 'auto', navTapClose: true },
     prompts: { summary: '', resummary: '', resummary2: '', jailbreak: '', timeTag: '' },
+    verbosity: 'detailed',
     vector: {
       enabled: false,
       // 默认填硅基流动地址 + 各角色模型,用户只需在 embedding 填一次 key 即可跑通:
@@ -208,6 +214,8 @@ function normalize(raw: unknown): ApiSettings {
   };
   // 副 API 渠道:逐个补全新加的字段(老数据没有 stream/excludeParams),并校验类型
   merged.channels = (Array.isArray(merged.channels) ? merged.channels : []).map(normalizeChannel);
+  // 字数档位:仅两个合法值,旧数据缺失/非法回退详细(= 老用户行为不变)
+  merged.verbosity = merged.verbosity === 'concise' ? 'concise' : 'detailed';
   return merged;
 }
 
@@ -256,6 +264,7 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.enabled = src.enabled;
   target.ui = src.ui;
   target.prompts = src.prompts;
+  target.verbosity = src.verbosity;
   target.vector = src.vector;
   target.channels = src.channels;
   target.assignments = src.assignments;
