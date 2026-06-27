@@ -17,6 +17,7 @@ import { getContext, type STMessage } from '@/st/context';
 import { apiSettings, engineActiveHere } from '@/api/settings';
 import { isBaiBaoKuAvailable, vecSearch, type VecHit } from '@/api/baibaoku';
 import { getLeaf, leafValid } from '../apply';
+import { MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END } from '../prompts';
 import { embedTexts, encodeFloat32Base64, rerankDocuments } from './embed';
 import { rewriteQuery } from './rewrite';
 import { ensureRecallIndex } from './index';
@@ -396,7 +397,8 @@ function buildRecallText(
 
   const chunks = [...fullChunks, ...briefChunks];
   if (!chunks.length) return { text: '', tiers };
-  return { text: `[相关回忆]\n${chunks.join('\n\n')}`, tiers };
+  // 首尾私密简报框定,避免主模型把召回回忆当成要复述/输出的模板
+  return { text: `${MEMORY_BRIEFING_NOTE}\n[相关回忆]\n${chunks.join('\n\n')}\n${MEMORY_BRIEFING_END}`, tiers };
 }
 
 /**

@@ -14,7 +14,7 @@ import { apiSettings, engineActiveHere } from '@/api/settings';
 import type { STMessage } from '@/st/context';
 import { getContext } from '@/st/context';
 import { getLeaf, leafValid } from './apply';
-import { fmtItems, fmtPlans } from './prompts';
+import { fmtItems, fmtPlans, MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END } from './prompts';
 import { memory } from './store';
 import { compactTimeLabel, formatRange, latestStoryTime, splitTimeLabel, timeTagPrompt } from './timeTag';
 import { relativeTimeLabel } from './timeRel';
@@ -214,7 +214,8 @@ export function buildHistoryInjectionText(): string {
   const sums = selectInjectionNodes(memory.summaries, chat);
   if (!sums.length) return '';
   // 注入路径带相对时间前缀;参照点 = 故事内最新时间(读正文标签,不受是否已摘影响)
-  return `[历史剧情摘要]\n${renderHistoryNodesWithRelative(sums, latestStoryTime(chat))}`;
+  // 首尾私密简报框定,避免主模型把摘要当成要复述/输出的模板
+  return `${MEMORY_BRIEFING_NOTE}\n[历史剧情摘要]\n${renderHistoryNodesWithRelative(sums, latestStoryTime(chat))}\n${MEMORY_BRIEFING_END}`;
 }
 
 /**
@@ -258,7 +259,8 @@ export function buildStateInjectionText(): string {
   // 但只要存在摘要或时间/地点就值得带上整块)
   const hasState = memory.state.time || memory.state.location || memory.items.length || openPlans.length;
   if (!hasState) return '';
-  return `[当前状态]\n${st.join('\n')}`;
+  // 首尾私密简报框定,避免主模型把状态快照当成要复述/输出的模板(正文后跟吐一份状态)
+  return `${MEMORY_BRIEFING_NOTE}\n[当前状态]\n${st.join('\n')}\n${MEMORY_BRIEFING_END}`;
 }
 
 /**
