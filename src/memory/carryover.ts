@@ -192,44 +192,57 @@ export async function createNewChatWithCarryover(): Promise<boolean> {
     if (!targetCtx) throw new Error('新对话上下文不可用');
     const targetChat = targetCtx.chat ?? [];
 
-    // 确保有 #0 锚点楼:保留新对话开场白的 #0 当锚点,清空正文、设为系统楼(不进上下文),
-    // 其余开场白楼删掉(避免新卡开场白与携带剧情冲突)。无 #0 则不强造(空聊天也可)。
+    // 确保有 #0 锚点楼:种子叶子(承载全量状态 delta + 合并摘要文本)必须挂在一条 #0 上。
+    // 卡有开场白 → 复用 #0 当锚点(清空正文、设系统楼,删其余开场白);
+    // 卡**空开场白** → getChat 不会 push 任何楼,targetChat 为空,此处主动造一条锚点楼。
+    //   (这是之前漏掉的分支:空开场白卡会让整个锚点块被跳过,导致窗口外摘要/状态全丢。)
+    let anchor: STMessage;
     if (targetChat.length > 0) {
       // 只在「新对话是全新无 user 楼」时清开场白,避免误删用户已有内容
       const hasUser = targetChat.some(m => m.is_user);
       if (!hasUser && carryMessages.length > 0) {
         targetChat.splice(1); // 留 #0,删其余开场白
       }
-      const anchor = targetChat[0];
-      anchor.is_system = true;
-      anchor.mes = '';
-      // 种子叶子挂 #0.extra
-      const seedLeaf: LeafExtra = {
-        id: makeLeafId(),
-        text: mergedSummary,
-        delta: seedDelta,
-        timeEnd: seedTime || undefined,
-        timeStart: seedTime || undefined,
-        createdAt: Date.now(),
-        v: 1,
+      anchor = targetChat[0];
+    } else {
+      // 空开场白卡:造一条锚点楼放进 #0
+      anchor = {
+        name: targetCtx.name2 || '',
+        is_user: false,
+        is_system: true,
+        mes: '',
+        extra: {},
       };
-      anchor.extra = { ...(anchor.extra ?? {}), bbs_leaf: seedLeaf };
+      targetChat.push(anchor);
+    }
+    anchor.is_system = true;
+    anchor.mes = '';
+    // 种子叶子挂 #0.extra
+    const seedLeaf: LeafExtra = {
+      id: makeLeafId(),
+      text: mergedSummary,
+      delta: seedDelta,
+      timeEnd: seedTime || undefined,
+      timeStart: seedTime || undefined,
+      createdAt: Date.now(),
+      v: 1,
+    };
+    anchor.extra = { ...(anchor.extra ?? {}), bbs_leaf: seedLeaf };
 
-      // 新对话森林:重置后放一条 L2 总结收纳种子叶子(承载合并摘要文本)。
-      memory.summaries.splice(0, memory.summaries.length);
-      if (mergedSummary) {
-        const l2: MemSummary = {
-          id: `sum_carry_${Date.now().toString(36)}`,
-          text: mergedSummary,
-          level: 2,
-          createdAt: Date.now(),
-          auto: true,
-          timeStart: seedTime || undefined,
-          timeEnd: seedTime || undefined,
-          childIds: [seedLeaf.id],
-        };
-        memory.summaries.push(l2);
-      }
+    // 新对话森林:重置后放一条 L2 总结收纳种子叶子(承载合并摘要文本)。
+    memory.summaries.splice(0, memory.summaries.length);
+    if (mergedSummary) {
+      const l2: MemSummary = {
+        id: `sum_carry_${Date.now().toString(36)}`,
+        text: mergedSummary,
+        level: 2,
+        createdAt: Date.now(),
+        auto: true,
+        timeStart: seedTime || undefined,
+        timeEnd: seedTime || undefined,
+        childIds: [seedLeaf.id],
+      };
+      memory.summaries.push(l2);
     }
 
     // 搬入窗口楼层

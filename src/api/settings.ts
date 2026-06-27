@@ -150,9 +150,11 @@ function defaults(): ApiSettings {
     prompts: { summary: '', resummary: '', jailbreak: '', timeTag: '' },
     vector: {
       enabled: false,
-      embedding: { url: '', key: '', model: '' },
-      rerank: { url: '', key: '', model: '' },
-      queryRewrite: { url: '', key: '', model: '' },
+      // 默认填硅基流动地址 + 各角色模型,用户只需在 embedding 填一次 key 即可跑通:
+      // rerank/queryRewrite 的 url/key 留空会回落复用 embedding 的(见 resolveVectorModel)。
+      embedding: { url: 'https://api.siliconflow.cn/v1', key: '', model: 'Qwen/Qwen3-Embedding-8B' },
+      rerank: { url: '', key: '', model: 'Qwen/Qwen3-Reranker-4B' },
+      queryRewrite: { url: '', key: '', model: 'Qwen/Qwen3.5-27B' },
       recall: {
         rerankCandidates: 20,
         embeddingThreshold: 0.5,
@@ -163,7 +165,7 @@ function defaults(): ApiSettings {
     },
     channels: [],
     assignments: { summary: '', resummary: '' },
-    autoSummaryEnabled: false,
+    autoSummaryEnabled: true,
     keepRecent: 5,
     excludedChars: [],
     leafBatchThreshold: 12,
