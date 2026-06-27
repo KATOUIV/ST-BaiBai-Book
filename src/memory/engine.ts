@@ -264,9 +264,11 @@ export async function handleGenerationIntercept(
   if (typeof exec === 'function') {
     // 多行靠 {{newline}} 宏(sendMessageAs 走 substituteParams 会还原成换行)
     const text = [
-      '[柏宝书]',
-      `前面存在未生成摘要的楼层(${holes.length} 层),已拦截本次生成。请等待后台补摘完成(或在柏宝书摘要页点未摘要楼层号手动补摘),完成后再重新发送。`,
-      BACKLOG_NOTICE_SENTINEL,
+      `【柏宝书】${BACKLOG_NOTICE_SENTINEL}`,
+      `发生了什么: 因为前面有楼层没有摘要，为了保证剧情的连续性，所以你需要先去给它补全摘要才能继续发送消息`,
+      `应该怎么做: 点开左下角魔法棒，打开柏宝书界面，在第一页中，会显示“未摘要楼层”，点一下楼层号，就可以自动补全`,
+      `补全失败: 多半是API问题，多尝试不同的API`,
+      `补全成功: 在补全成功后，只需要把这一层提示楼层删掉，就可以继续正常生成了`
     ].join('{{newline}}');
     try {
       await exec(`/sendas name="柏宝书" ${text}`);
@@ -504,6 +506,31 @@ function resolveSender(
 }
 
 /**
+ * 发请求并解析,失败自动重试。失败 = 请求抛错 或 解析函数抛错(JSON 无效/缺字段)。
+ * 最多重试 apiSettings.summaryMaxRetries 次(默认 1),即「首试 + N 次重试」共 N+1 次尝试。
+ * 全部失败则抛出最后一次的错误,由调用方写 lastError。
+ */
+async function sendAndParse<T>(
+  send: (messages: ChatMsg[]) => Promise<string>,
+  messages: ChatMsg[],
+  parse: (raw: string) => T,
+): Promise<T> {
+  const maxRetries = Math.max(0, apiSettings.summaryMaxRetries | 0);
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return parse(await send(messages));
+    } catch (e) {
+      lastErr = e;
+      if (attempt < maxRetries) {
+        console.log(`[柏宝书] 第 ${attempt + 1} 次尝试失败,重试:`, e instanceof Error ? e.message : String(e));
+      }
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+/**
  * 单楼摘要。对外包一层,维护「当前在飞摘要」信号 currentRun,供生成拦截器 await(见 handleGenerationIntercept)。
  *  - currentRun 同步置为本次 promise → 拦截器在 GENERATION_STARTED(触发摘要)之后跑时已能读到它。
  *  - finally 里清回 null(只清自己,避免清掉后一次调用设的新 promise)。
@@ -592,12 +619,16 @@ async function runSummaryInner(aiFloor: number): Promise<void> {
       { role: 'system', content: THINKING_CHECKLIST },
       { role: 'assistant', content: THINKING_PREFILL },
     );
-    const raw = await sender.send(messages);
-    console.log('[柏宝书] 摘要原始返回(未清洗):\n', raw);
-    const delta = extractJsonObject<SummaryDelta>(raw);
-    if (!delta || !delta.summary) {
-      throw new Error('摘要解析失败:未得到有效 JSON 或缺 summary 字段');
-    }
+    // 发请求 + 解析,失败按设置重试(请求报错或 JSON 无效/缺 summary 都算失败)
+    const delta = await sendAndParse(sender.send, messages, raw => {
+      console.log('[柏宝书] 摘要原始返回(未清洗):\n', raw);
+      const d = extractJsonObject<SummaryDelta>(raw);
+      if (!d || !d.summary) {
+        // 有文本但抽不出所需格式 = AI 道歉/掉格式;整段空白 = AI 空回
+        throw new Error(raw.trim() ? '摘要失败:AI道歉或掉格式' : '摘要失败:AI空回');
+      }
+      return d as SummaryDelta & { summary: string };
+    });
 
     // 固化 delta(resolve 短序号→稳定 plan id),写成叶子挂到 AI 楼的 extra(随消息/swipe 跟随)
     const storedDelta = finalizeDelta(delta, openPlansOrdered);
@@ -739,10 +770,17 @@ export async function checkResummary(): Promise<number> {
       const messages: ChatMsg[] = [];
       if (jb) messages.push({ role: 'system', content: jb });
       messages.push({ role: 'user', content: prompt });
-      const raw = await sender.send(messages);
-      console.log('[柏宝书] 总结原始返回(未清洗):\n', raw);
-      const delta = extractJsonObject<{ summary?: string }>(raw);
-      if (!delta?.summary) throw new Error('总结解析失败');
+      // 发请求 + 解析,失败按设置重试(请求报错或 JSON 无效/缺 summary 都算失败)
+      const delta = await sendAndParse(sender.send, messages, raw => {
+        console.log('[柏宝书] 总结原始返回(未清洗):\n', raw);
+        const d = extractJsonObject<{ summary?: string }>(raw);
+        if (!d?.summary) {
+          // 输出层级 level+1:为 1 是普通总结,≥2 是二次总结;有文本=掉格式,空白=空回
+          const what = level + 1 === 1 ? '总结' : '二次总结';
+          throw new Error(raw.trim() ? `${what}失败:AI道歉或掉格式` : `${what}失败:AI空回`);
+        }
+        return d as { summary: string };
+      });
 
       // 生成上层节点收纳这批(**不删 batch**),时间戳取批内最新,排在它们之后
       const newCreatedAt = Math.max(...batch.map(s => s.createdAt)) + 1;

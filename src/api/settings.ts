@@ -130,6 +130,8 @@ export interface ApiSettings {
   leafBatchThreshold: number;
   /** L1 及以上每积累到 N 条时,压成上一层总结(L≥1→L+1 阈值,0=关闭) */
   resummaryThreshold: number;
+  /** 摘要/总结失败(请求报错或 JSON 解析失败)的最大重试次数。0=不重试;默认 1(最多再试一次)。 */
+  summaryMaxRetries: number;
 }
 
 // extension_settings 里的命名空间键;localStorage 是旧版残留,仅用于一次性迁移。
@@ -179,6 +181,7 @@ function defaults(): ApiSettings {
     excludedChars: [],
     leafBatchThreshold: 12,
     resummaryThreshold: 7,
+    summaryMaxRetries: 1,
   };
 }
 
@@ -216,6 +219,11 @@ function normalize(raw: unknown): ApiSettings {
   merged.channels = (Array.isArray(merged.channels) ? merged.channels : []).map(normalizeChannel);
   // 字数档位:仅两个合法值,旧数据缺失/非法回退详细(= 老用户行为不变)
   merged.verbosity = merged.verbosity === 'concise' ? 'concise' : 'detailed';
+  // 重试次数:非负整数,旧数据缺失/非法回退默认 1
+  merged.summaryMaxRetries =
+    Number.isFinite(merged.summaryMaxRetries) && merged.summaryMaxRetries >= 0
+      ? Math.floor(merged.summaryMaxRetries)
+      : 1;
   return merged;
 }
 
@@ -273,6 +281,7 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.excludedChars = src.excludedChars;
   target.leafBatchThreshold = src.leafBatchThreshold;
   target.resummaryThreshold = src.resummaryThreshold;
+  target.summaryMaxRetries = src.summaryMaxRetries;
 }
 
 /** 写回 extension_settings 并防抖落盘到服务器(跨设备同步的关键)。 */

@@ -612,6 +612,11 @@ function scorePct(score: number): number {
           <input v-model.number="apiSettings.resummaryThreshold" class="bbs-input bbs-num" type="number" min="0" />
         </label>
         <p class="bbs-field-hint">总结达到多少条后再次进行总结,0 为关闭二次总结。</p>
+        <label class="bbs-num-row">
+          <span class="bbs-field-label">失败重试次数</span>
+          <input v-model.number="apiSettings.summaryMaxRetries" class="bbs-input bbs-num" type="number" min="0" />
+        </label>
+        <p class="bbs-field-hint">摘要/总结请求失败(报错或返回内容无法解析)时最多额外重试几次,0 为不重试。默认 1。</p>
       </Collapsible>
 
       <!-- 排除角色 -->
