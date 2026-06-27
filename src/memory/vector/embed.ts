@@ -155,29 +155,92 @@ export interface RerankResult {
   score: number;
 }
 
-/**
- * 重排:把候选文档按与 query 的相关度打分。返回按 score 降序的 {index, score}。
- * rerank 渠道未配齐时抛错(由调用方决定降级:跳过 rerank、直接用 embedding 序)。
- */
-export async function rerankDocuments(
-  query: string,
-  documents: string[],
-  topN: number,
-  signal?: AbortSignal,
-): Promise<RerankResult[]> {
-  if (!documents.length) return [];
-  const ep = resolveVectorModel('rerank');
-  if (!ep.url) throw new EmbedError('向量记忆:Rerank 地址未配置');
-  if (!ep.model) throw new EmbedError('向量记忆:Rerank 模型未配置');
+/* ============ rerank token 估算 / 分批(借鉴 Horae,全文精排时单请求会超上游上下文) ============ */
 
-  const base = embeddingBase(ep.url);
-  const endpoint = `${base}/rerank`;
+/** rerank 上游单请求的上下文上限(token);多数 rerank 模型 32k 起,取保守值。 */
+const RERANK_CONTEXT_LIMIT = 32768;
+const RERANK_SAFE_RATIO = 0.68; // 仅用预算的 68%,给 prompt 模板/响应留余量
+const RERANK_STATIC_RESERVE = 1800; // 固定保留(模型框架开销)
+const RERANK_PER_DOC_OVERHEAD = 24; // 每条文档的分隔/包裹开销
+
+/** 粗估文本 token:CJK ≈1.35、其它 ≈0.45,再加安全系数(对齐 Horae,宁可高估)。 */
+function estimateRerankTokens(text: string): number {
+  if (!text) return 0;
+  const str = String(text);
+  let cjk = 0;
+  for (const ch of str) {
+    const cp = ch.codePointAt(0)!;
+    if (
+      (cp >= 0x3400 && cp <= 0x4dbf) || (cp >= 0x4e00 && cp <= 0x9fff) ||
+      (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0x3040 && cp <= 0x30ff) ||
+      (cp >= 0xac00 && cp <= 0xd7af)
+    ) cjk++;
+  }
+  const other = Math.max(0, str.length - cjk);
+  return Math.ceil((cjk * 1.35 + other * 0.45 + 8) * 1.18);
+}
+
+/** 二分截断到 token 上限内(保留前缀)。 */
+function truncateByTokens(text: string, tokenLimit: number): string {
+  if (!text || tokenLimit <= 0) return '';
+  if (estimateRerankTokens(text) <= tokenLimit) return text;
+  let lo = 0, hi = text.length, best = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (estimateRerankTokens(text.slice(0, mid)) <= tokenLimit) { best = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return text.slice(0, best).trimEnd();
+}
+
+/** rerank 分批并发上限(批次再多也只同时打这么多请求)。 */
+const RERANK_BATCH_CONCURRENCY = 4;
+
+interface RerankBatch {
+  indices: number[]; // 该批每条文档的全局下标
+  documents: string[];
+}
+
+/** 按 token 预算把文档切成多批,超长单条先截断。 */
+function buildRerankBatches(query: string, documents: string[]): RerankBatch[] {
+  const queryTokens = estimateRerankTokens(query);
+  const docBudget = Math.max(1024, Math.floor(RERANK_CONTEXT_LIMIT * RERANK_SAFE_RATIO) - RERANK_STATIC_RESERVE - queryTokens);
+  const maxSingleDocTokens = Math.max(768, docBudget - 256);
+
+  const batches: RerankBatch[] = [];
+  let curIdx: number[] = [], curDocs: string[] = [], curTokens = 0;
+  const flush = () => {
+    if (!curIdx.length) return;
+    batches.push({ indices: curIdx, documents: curDocs });
+    curIdx = []; curDocs = []; curTokens = 0;
+  };
+
+  for (let i = 0; i < documents.length; i++) {
+    let text = documents[i] ?? '';
+    let est = estimateRerankTokens(text) + RERANK_PER_DOC_OVERHEAD;
+    if (est > maxSingleDocTokens) {
+      text = truncateByTokens(text, Math.max(512, maxSingleDocTokens - RERANK_PER_DOC_OVERHEAD));
+      est = estimateRerankTokens(text) + RERANK_PER_DOC_OVERHEAD;
+    }
+    if (curIdx.length && curTokens + est > docBudget) flush();
+    curIdx.push(i);
+    curDocs.push(text);
+    curTokens += est;
+  }
+  flush();
+  return batches;
+}
+
+/** 单批 rerank 请求,返回该批内 {index(局部), score}。 */
+async function rerankBatch(
+  endpoint: string, model: string, key: string, query: string, documents: string[], signal?: AbortSignal,
+): Promise<RerankResult[]> {
   let resp: Response;
   try {
     resp = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ep.key || ''}` },
-      body: JSON.stringify({ model: ep.model, query, documents, top_n: topN }),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model, query, documents, top_n: documents.length }),
       signal,
     });
   } catch (e) {
@@ -190,7 +253,49 @@ export async function rerankDocuments(
   const json = await resp.json();
   const results = json?.results ?? json?.data;
   if (!Array.isArray(results)) throw new EmbedError('rerank 返回缺少 results 数组');
-  return results
-    .map((r: any) => ({ index: r.index, score: r.relevance_score ?? r.score ?? 0 }))
-    .sort((a: RerankResult, b: RerankResult) => b.score - a.score);
+  return results.map((r: any) => ({ index: r.index, score: r.relevance_score ?? r.score ?? 0 }));
+}
+
+/**
+ * 重排:把候选文档(全文精排时即楼层原文)按与 query 的相关度打分。
+ * 返回按 score 降序的 {index, score}(index = 输入 documents 的全局下标)。
+ * 文档总量超 rerank 上下文预算时自动按 token 分批、超长单条截断,各批结果按全局下标合并。
+ * rerank 渠道未配齐时抛错(由调用方决定降级:跳过 rerank、直接用 embedding 序)。
+ */
+export async function rerankDocuments(
+  query: string,
+  documents: string[],
+  _topN: number,
+  signal?: AbortSignal,
+): Promise<RerankResult[]> {
+  if (!documents.length) return [];
+  const ep = resolveVectorModel('rerank');
+  if (!ep.url) throw new EmbedError('向量记忆:Rerank 地址未配置');
+  if (!ep.model) throw new EmbedError('向量记忆:Rerank 模型未配置');
+
+  const endpoint = `${embeddingBase(ep.url)}/rerank`;
+  const batches = buildRerankBatches(query, documents);
+  const key = ep.key || '';
+  const model = ep.model;
+
+  // worker 池并发:批次再多也只同时打 RERANK_BATCH_CONCURRENCY 个请求,各批结果按全局下标合并。
+  const merged: RerankResult[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (true) {
+      const bi = next++;
+      if (bi >= batches.length) break;
+      const batch = batches[bi];
+      const local = await rerankBatch(endpoint, model, key, query, batch.documents, signal);
+      for (const r of local) {
+        const globalIndex = batch.indices[r.index];
+        if (globalIndex === undefined) continue;
+        merged.push({ index: globalIndex, score: r.score });
+      }
+    }
+  };
+  const poolSize = Math.min(RERANK_BATCH_CONCURRENCY, batches.length);
+  await Promise.all(Array.from({ length: poolSize }, () => worker()));
+
+  return merged.sort((a, b) => b.score - a.score);
 }

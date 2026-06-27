@@ -179,7 +179,13 @@ interface RankedHit extends VecHit {
 async function rerankCandidates(query: string, hits: VecHit[], signal?: AbortSignal): Promise<RankedHit[]> {
   // rerank 渠道未配置 → 直接降级(embedTexts/resolveVectorModel 在 rerank 缺渠道时会抛错)
   try {
-    const docs = hits.map(h => h.document || h.mesFull || '');
+    // 全文精排:发楼层原文(mesFull)给 rerank,语义比摘要更全;无原文(如种子叶子)退摘要。
+    // 带故事时间头,给 rerank 模型时间上下文(超长由 rerankDocuments 内部按 token 截断/分批)。
+    const docs = hits.map(h => {
+      const body = h.mesFull || h.document || '';
+      const t = (h.storyTime || '').trim();
+      return t ? `【${t}】\n${body}` : body;
+    });
     const order = await rerankDocuments(query, docs, hits.length, signal);
     // order 是 {index, score} 降序;映射回 hit
     return order
