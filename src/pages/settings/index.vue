@@ -1760,7 +1760,7 @@ function scorePct(score: number): number {
 /* 来源 Q 徽标 */
 .bbs-dbg-src {
   flex: 0 0 auto;
-  min-width: 26px;
+  min-width: 38px; /* 与楼层号标签等宽,单数 Q 也不至于太窄 */
   text-align: center;
   padding: 1px 7px;
   border-radius: var(--bbs-radius-pill);
@@ -1773,6 +1773,8 @@ function scorePct(score: number): number {
 /* 来源标记:本聊天楼层号(中性)/ 旧档(描边提示色) */
 .bbs-dbg-from {
   flex: 0 0 auto;
+  min-width: 38px; /* 楼层号个位数(#5)也不至于太窄,与 Q 标签视觉等宽 */
+  text-align: center;
   padding: 1px 7px;
   border-radius: var(--bbs-radius-pill);
   font-family: var(--bbs-font-mono);

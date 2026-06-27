@@ -92,7 +92,29 @@ interface RecallCache {
   text: string;
   debug: RecallDebug;
 }
-let recallCache: RecallCache | null = null;
+
+// 暂存到 localStorage:切后台被浏览器丢弃、刷新、开新标签页后召回缓存仍在,免得白白重召回。
+// 跨天/跨标签的残留无副作用:key 已含 chatId+楼层+内容哈希+参数指纹,对不上只会重算,绝不误命中。
+// (不违反「设置别用 localStorage」那条——那是设置要跨设备同步必走服务器;召回缓存是本机临时结果,无需同步。)
+// 失败全静默(隐私模式/配额满):退化为无缓存,绝不影响召回主流程。
+const RECALL_CACHE_STORAGE_KEY = 'bbs_vec_recall_cache';
+
+function loadRecallCache(): RecallCache | null {
+  try {
+    const raw = localStorage.getItem(RECALL_CACHE_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as RecallCache) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveRecallCache(cache: RecallCache): void {
+  try {
+    localStorage.setItem(RECALL_CACHE_STORAGE_KEY, JSON.stringify(cache));
+  } catch {
+    /* 配额满/不可用:放弃持久化,本次仅本进程内有效 */
+  }
+}
 
 /** 召回参数指纹:覆盖全部影响最终注入文本的档位参数(注入深度是常量,不计)。 */
 function recallParamFingerprint(cfg: typeof apiSettings.vector.recall): string {
@@ -181,10 +203,11 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
 
   // 缓存命中(重生成/翻页且召回输入未变):直接复用上次注入文本 + 调试快照,跳过整条管线。
   const cacheKey = buildRecallCacheKey(chat, cfg);
-  if (cacheKey && recallCache && recallCache.key === cacheKey) {
-    fn(RECALL_INJECT_KEY, recallCache.text, IN_CHAT, RECALL_INJECT_DEPTH, false, ROLE_SYSTEM, null);
-    restoreRecallDebug(recallCache.debug);
-    setRecallStatus(`${recallCache.debug.status}(复用缓存)`);
+  const cached = cacheKey ? loadRecallCache() : null;
+  if (cacheKey && cached && cached.key === cacheKey) {
+    fn(RECALL_INJECT_KEY, cached.text, IN_CHAT, RECALL_INJECT_DEPTH, false, ROLE_SYSTEM, null);
+    restoreRecallDebug(cached.debug);
+    setRecallStatus(`${cached.debug.status}(复用缓存)`);
     return;
   }
 
@@ -246,7 +269,7 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
     setRecallInjected(text);
     setRecallStatus(text ? '召回完成' : '召回完成:无内容达标,本回合未注入');
     // 实算成功才落缓存(失败/降级路径不缓存,下次重试)。存调试快照供命中时还原面板。
-    if (cacheKey) recallCache = { key: cacheKey, text, debug: snapshotRecallDebug() };
+    if (cacheKey) saveRecallCache({ key: cacheKey, text, debug: snapshotRecallDebug() });
   } catch (e) {
     console.warn('[柏宝书向量] 召回失败(降级为不召回):', e);
     setRecallStatus(`失败:${e instanceof Error ? e.message : String(e)}`);
