@@ -16,6 +16,7 @@ import { apiSettings } from '@/api/settings';
 import { isBaiBaoKuAvailable, vecReconcile, vecUpsert, type VecItem } from '@/api/baibaoku';
 import { getLeaf, leafValid, stripHtml } from '../apply';
 import { resolveKeepStart } from '../engine';
+import { clampToTimeTags, inlineTimeTags } from '../timeTag';
 import type { LeafExtra } from '../types';
 import { embedTexts, encodeFloat32Base64 } from './embed';
 import { currentChatId, currentVectorDb } from './scope';
@@ -30,9 +31,13 @@ function docHashOf(text: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
-/** 楼层原文清洗:去思维链/物品旁注/标签(复用 stripHtml),供跨聊天召回「全文档」用。 */
+/**
+ * 楼层原文清洗,供跨聊天召回「全文档」存档/回注。与喂摘要模型同口径(engine.ts):
+ *  clampToTimeTags(框出正文段,去最后一个 <bbs_start> 前 / 第一个 </bbs_end> 后的状态栏/思维链/页脚)
+ *  → inlineTimeTags(时间标签转可读文本,保留时间信息)→ stripHtml(清其余标签)。
+ */
 function cleanMesFull(mes: string): string {
-  return stripHtml(mes);
+  return stripHtml(inlineTimeTags(clampToTimeTags(mes)));
 }
 
 interface LeafForIndex {

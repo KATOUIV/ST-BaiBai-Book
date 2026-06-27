@@ -21,6 +21,7 @@ import { resolveKeepStart } from '../engine';
 import { renderHistoryNodes, selectHistoryNodesBefore } from '../inject';
 import { fmtItems, fmtPlans, QUERY_REWRITE_SYSTEM, QUERY_REWRITE_TAIL } from '../prompts';
 import { memory } from '../store';
+import { clampToTimeTags, inlineTimeTags } from '../timeTag';
 
 /** rewrite 模型最多取几条 query(对齐 Horae) */
 const MAX_QUERIES = 6;
@@ -39,9 +40,13 @@ interface ChatMsg {
   content: string;
 }
 
-/** 把楼层正文清洗成可读文本(复用 stripHtml:去思维链/物品旁注/标签) */
+/**
+ * 把楼层正文清洗成可读文本,与喂摘要模型同口径(engine.ts):
+ *  clampToTimeTags(框出正文段,去最后一个 <bbs_start> 前 / 第一个 </bbs_end> 后的状态栏/思维链/页脚)
+ *  → inlineTimeTags(时间标签转可读文本,免被 stripHtml 删掉)→ stripHtml(清其余标签)。
+ */
 function cleanFloor(m: STMessage): string {
-  return stripHtml(m.mes);
+  return stripHtml(inlineTimeTags(clampToTimeTags(m.mes)));
 }
 
 /**
@@ -75,36 +80,57 @@ function findSnapshotCut(chat: STMessage[], windowStart: number): number {
 
 /**
  * 构造发给 rewrite 模型的消息序列。
- * 窗口楼层按真实角色(user/assistant)交替平铺;状态快照作为一条 system 插在 cut 点之前。
+ *
+ * ⚠️ 许多向量渠道要求 system 消息**仅允许出现在数组最开头**,中间不得再有 system。
+ * 故对齐 Horae 的形态:**开头唯一一条 system + 中间纯 user/assistant 对话 + 结尾一条 user**。
+ *  - 历史剧情摘要并入开头那条 system(属背景设定,合法地待在开头);
+ *  - 状态快照不独立成 system,而是**拼进对话消息正文**(放在 cut 点前一条之后、洞楼之前),
+ *    保持中间无 system,从而兼容「system 只能在开头」的渠道。
  */
 function buildMessages(chat: STMessage[]): ChatMsg[] {
   const windowStart = resolveKeepStart(chat);
   const cut = findSnapshotCut(chat, windowStart);
 
-  const messages: ChatMsg[] = [{ role: 'system', content: QUERY_REWRITE_SYSTEM }];
-
-  // [历史剧情摘要]:窗口之前的剧情(选最高存活压缩层),作为前置背景
+  // 开头唯一 system:系统提示词 +(可选)历史剧情摘要,合并为一条,保证 system 只出现在开头
   const history = renderHistoryNodes(selectHistoryNodesBefore(memory.summaries, chat, windowStart));
-  if (history) messages.push({ role: 'system', content: `[历史剧情摘要]\n${history}` });
+  const systemContent = history ? `${QUERY_REWRITE_SYSTEM}\n\n[历史剧情摘要]\n${history}` : QUERY_REWRITE_SYSTEM;
+  const messages: ChatMsg[] = [{ role: 'system', content: systemContent }];
 
-  // 最近窗口楼层:按角色交替平铺;在 cut 点(第一个无叶子楼)之前插状态快照
-  const snapshot = buildStateSnapshot(chat, cut);
-  let snapshotInserted = false;
+  // 平铺窗口对话(纯 user/assistant),记录原 msgIndex 以定位快照插入点
+  const convo: Array<{ role: 'user' | 'assistant'; content: string; index: number }> = [];
   for (let i = windowStart; i < chat.length; i++) {
     const m = chat[i];
     if (!m) continue;
     if (m.is_system && m.extra?.type) continue; // 原生系统楼跳过
-    // 到达 cut 点、且快照还没插 → 先插快照(放在连续叶子前缀末尾之后、洞楼之前)
-    if (!snapshotInserted && i === cut && snapshot) {
-      messages.push({ role: 'system', content: snapshot });
-      snapshotInserted = true;
-    }
     const text = cleanFloor(m);
     if (!text) continue;
-    messages.push({ role: m.is_user ? 'user' : 'assistant', content: text });
+    convo.push({ role: m.is_user ? 'user' : 'assistant', content: text, index: i });
   }
-  // cut == chat.length(窗口全有叶子)→ 快照还没插,补在末尾
-  if (!snapshotInserted && snapshot) messages.push({ role: 'system', content: snapshot });
+
+  // 状态快照:拼进对话消息正文(不独立成 system)。语义 = 截止 cut(第一个无叶子楼)之前的确凿状态。
+  const snapshot = buildStateSnapshot(chat, cut);
+  if (snapshot) {
+    if (!convo.length) {
+      // 窗口无可用对话消息 → 兜底放一条 user 承载(仍非 system)
+      messages.push({ role: 'user', content: snapshot });
+    } else {
+      const cutPos = convo.findIndex(c => c.index >= cut);
+      if (cutPos === -1) {
+        // cut 在所有对话之后(窗口全有叶子)→ 拼进最后一条末尾
+        const last = convo[convo.length - 1];
+        last.content = `${last.content}\n\n${snapshot}`;
+      } else if (cutPos === 0) {
+        // cut 点即首条对话(之前无对话可承载)→ 拼进它的前缀
+        convo[0].content = `${snapshot}\n\n${convo[0].content}`;
+      } else {
+        // 拼进 cut 点前一条对话的末尾(连续叶子前缀末尾之后、洞楼之前)
+        const prev = convo[cutPos - 1];
+        prev.content = `${prev.content}\n\n${snapshot}`;
+      }
+    }
+  }
+
+  for (const c of convo) messages.push({ role: c.role, content: c.content });
 
   // 收尾提示词
   messages.push({ role: 'user', content: QUERY_REWRITE_TAIL });
@@ -126,6 +152,9 @@ function parseResponse(text: string): RewriteResult {
   const lines = String(text || '')
     .replace(/\r\n?/g, '\n')
     .replace(/\\n/g, '\n')
+    // 双保险:即便请求关了 enable_thinking,个别模型仍会吐 <think> 块,先整段剥掉再逐行解析,
+    // 否则思维链里出现的 INTENT/Q 字样会污染解析结果。
+    .replace(/<think(?:ing)?\b[\s\S]*?<\/think(?:ing)?>/gi, '')
     .split('\n')
     .map(l => l.trim())
     .filter(Boolean);
@@ -189,9 +218,13 @@ export async function rewriteQuery(signal?: AbortSignal): Promise<RewriteResult>
       body: JSON.stringify({
         model: ep.model,
         messages,
-        temperature: 0.3,
+        // 对齐 Horae:低温更服从格式;enable_thinking:false 关思维链——
+        // 国产模型(Qwen3/GLM 等)默认开思维链会先吐 <think> 推理,冲乱 INTENT/Q 行格式导致解析失败。
+        temperature: 0.1,
+        top_p: 0.8,
         max_tokens: 800,
         stream: false,
+        enable_thinking: false,
       }),
       signal,
     });

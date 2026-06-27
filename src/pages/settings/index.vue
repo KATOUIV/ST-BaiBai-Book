@@ -697,18 +697,10 @@ function insertMacro(token: string) {
             得分高的发原文全文,稍低但仍过 embedding 阈值的发摘要;两档合计不超过「最终召回条数」。
           </p>
 
-          <label class="bbs-switch-row">
-            <span class="bbs-field-label">启用查询重写</span>
-            <input
-              v-model="apiSettings.vector.recall.queryRewriteEnabled"
-              type="checkbox"
-              class="bbs-checkbox"
-              :disabled="!apiSettings.vector.enabled"
-            />
-          </label>
           <p class="bbs-field-hint">
-            生成前用小模型(上方 Query 重写)把当前剧情重写成多条检索 query,多路召回更全面;
-            需配「Query 重写」模型,未配或失败则自动降级为用最近上下文直接检索。每回合多一次小模型请求(略增延迟)。
+            生成前用小模型(上方「Query 重写」)把当前剧情重写成多条检索 query,多路召回更全面。
+            <strong>查询重写为召回必经步骤,须配好「Query 重写」模型;未配或重写失败则本回合不召回。</strong>
+            每回合多一次小模型请求(略增延迟)。
           </p>
 
           <label class="bbs-num-row">

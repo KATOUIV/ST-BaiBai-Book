@@ -74,8 +74,6 @@ export interface VectorRecallSettings {
   fullTextCount: number;
   /** 最终召回条数(上限):全文档 + 摘要档合计不超过它 */
   finalRecallCount: number;
-  /** 是否启用查询重写(小模型把当前剧情重写成多条检索 query;需配 Query 重写模型) */
-  queryRewriteEnabled: boolean;
 }
 
 /** 向量记忆设置。embedding 为基准,rerank/queryRewrite 的 url 留空则整体复用 embedding。 */
@@ -161,7 +159,6 @@ function defaults(): ApiSettings {
         rerankThreshold: 0.5,
         fullTextCount: 3,
         finalRecallCount: 8,
-        queryRewriteEnabled: true,
       },
     },
     channels: [],

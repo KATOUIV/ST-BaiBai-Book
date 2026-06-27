@@ -17,7 +17,7 @@ import { getContext, type STMessage } from '@/st/context';
 import { apiSettings } from '@/api/settings';
 import { isBaiBaoKuAvailable, vecSearch, type VecHit } from '@/api/baibaoku';
 import { getLeaf, leafValid } from '../apply';
-import { embedTexts, embedToBase64, encodeFloat32Base64, rerankDocuments } from './embed';
+import { embedTexts, encodeFloat32Base64, rerankDocuments } from './embed';
 import { rewriteQuery } from './rewrite';
 import { ensureRecallIndex } from './index';
 import { currentVectorDb, recallScopes } from './scope';
@@ -28,20 +28,6 @@ const RECALL_INJECT_KEY = 'baibai_book_vector_recall';
 const IN_CHAT = 1;
 const ROLE_SYSTEM = 0;
 const RECALL_INJECT_DEPTH = 8; // 略低于历史摘要(9999),高于状态(1/2):当作「捞回的旧剧情」
-
-/** 取最近 N 条消息文本拼成检索 query(用户视角的「我现在在问什么」)。 */
-function buildQueryText(chat: STMessage[]): string {
-  // 最近若干条(含最新用户输入),清洗后拼接。窗口太大反而稀释焦点,取末尾 4 条。
-  const QUERY_CTX = 4;
-  const parts: string[] = [];
-  for (let i = Math.max(0, chat.length - QUERY_CTX); i < chat.length; i++) {
-    const m = chat[i];
-    if (!m || typeof m.mes !== 'string') continue;
-    const t = m.mes.trim();
-    if (t) parts.push(t);
-  }
-  return parts.join('\n').slice(0, 4000); // 上限防超长
-}
 
 /** 当前保留窗口内、已发全文的叶子 id(召回要排除它们,避免与全文重复)。 */
 function windowLeafIds(chat: STMessage[]): string[] {
@@ -104,14 +90,9 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
     // 否则这些旧剧情会直接漏召回。只阻塞窗口外,窗口内交给防抖增量。
     await ensureRecallIndex(signal);
 
-    const queryText = buildQueryText(chat);
-    if (!queryText) {
-      clearRecallInjection();
-      return;
-    }
-
-    // 1) 查询重写:得多条 query 向量 + rerank 用的 query 文本。失败/未启用降级为单 query。
-    const { queryVectors, rerankQuery } = await resolveQueryVectors(queryText, cfg, signal);
+    // 1) 查询重写(强制启用,无降级):得多条 query 向量 + rerank 用的 query 文本。
+    // 重写失败/无 query 会抛错 → 落到外层 catch,清空注入槽、结束本次召回。
+    const { queryVectors, rerankQuery } = await resolveQueryVectors(signal);
     if (!queryVectors.length) {
       clearRecallInjection();
       return;
@@ -144,31 +125,18 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
 
 /**
  * 解析检索用的多条 query 向量 + rerank 用的 query 文本。
- *  - 启用查询重写且配了模型 → rewrite 得 INTENT + 多条 Q,各自 embed;rerank query 用 INTENT(无则首条 Q)。
- *  - 未启用/重写失败 → 降级:用「最近上下文」当单 query;rerank query 也用它。
+ * 查询重写**强制启用、无降级**:rewrite 得 INTENT + 多条 Q,各自 embed;rerank query 用 INTENT(无则首条 Q)。
+ * 重写失败 / 无 query → 直接抛错,由 runVectorRecall 结束本次召回(不再降级为单 query)。
  */
 async function resolveQueryVectors(
-  queryText: string,
-  cfg: typeof apiSettings.vector.recall,
   signal?: AbortSignal,
 ): Promise<{ queryVectors: string[]; rerankQuery: string }> {
-  // queryRewrite 模型独立必填(地址/密钥才可留空复用);未配 model 则不尝试重写
-  const hasRewriteModel = !!apiSettings.vector.queryRewrite.model.trim();
-  if (cfg.queryRewriteEnabled && hasRewriteModel) {
-    try {
-      const { intent, queries } = await rewriteQuery(signal);
-      // 检索向量:多条 Q(INTENT 偏长偏全文,留给 rerank,不进检索向量以免稀释)
-      if (!queries.length) throw new Error('重写无 query');
-      const vecs = await embedTexts(queries, signal);
-      const queryVectors = vecs.map(v => encodeFloat32Base64(v));
-      return { queryVectors, rerankQuery: intent || queries[0] || queryText };
-    } catch (e) {
-      console.warn('[柏宝书向量] 查询重写失败,降级为单 query:', e);
-    }
-  }
-  // 降级:单 query
-  const single = await embedToBase64(queryText, signal);
-  return { queryVectors: [single], rerankQuery: queryText };
+  const { intent, queries } = await rewriteQuery(signal);
+  if (!queries.length) throw new Error('查询重写未产出任何 query');
+  // 检索向量:多条 Q(INTENT 偏长偏全文,留给 rerank,不进检索向量以免稀释)
+  const vecs = await embedTexts(queries, signal);
+  const queryVectors = vecs.map(v => encodeFloat32Base64(v));
+  return { queryVectors, rerankQuery: intent || queries[0] };
 }
 
 interface RankedHit extends VecHit {
