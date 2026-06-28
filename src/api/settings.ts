@@ -186,7 +186,7 @@ function defaults(): ApiSettings {
     leafBatchThreshold: 12,
     resummaryThreshold: 7,
     summaryMaxRetries: 1,
-    batchMaxChars: 8000,
+    batchMaxChars: 30000,
     batchMaxFloors: 10,
   };
 }
@@ -234,7 +234,7 @@ function normalize(raw: unknown): ApiSettings {
   merged.batchMaxChars =
     Number.isFinite(merged.batchMaxChars) && merged.batchMaxChars >= 500
       ? Math.floor(merged.batchMaxChars)
-      : 8000;
+      : 30000;
   merged.batchMaxFloors =
     Number.isFinite(merged.batchMaxFloors) && merged.batchMaxFloors >= 1
       ? Math.floor(merged.batchMaxFloors)

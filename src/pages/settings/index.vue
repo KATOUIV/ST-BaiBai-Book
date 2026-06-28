@@ -705,7 +705,7 @@ function scorePct(score: number): number {
           <span class="bbs-field-label">批量补摘·每批字数</span>
           <input v-model.number="apiSettings.batchMaxChars" class="bbs-input bbs-num" type="number" min="500" step="500" />
         </label>
-        <p class="bbs-field-hint">批量补摘时,每次请求最多打包多少字正文(清洗后)就切一批。越大越省 token/越快,但太大会让 AI 注意力分散、质量下降。默认 8000。</p>
+        <p class="bbs-field-hint">批量补摘时,每次请求最多打包多少字正文(清洗后)就切一批。越大越省 token/越快,但太大会让 AI 注意力分散、质量下降。默认 30000。</p>
         <label class="bbs-num-row">
           <span class="bbs-field-label">批量补摘·每批楼数上限</span>
           <input v-model.number="apiSettings.batchMaxFloors" class="bbs-input bbs-num" type="number" min="1" />
