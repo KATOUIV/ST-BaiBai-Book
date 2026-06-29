@@ -5,7 +5,7 @@ import { editSceneDesc, removeScene, reparentScene, upsertScene } from '@/memory
 import { derivedMeta, memory } from '@/memory/store';
 import { getContext } from '@/st/context';
 import type { MemScene } from '@/memory/types';
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 
 // 场景是从叶子摘要重放出的派生数据,手动操作写入「最新一条有效叶子」;无有效叶子时无处挂载。
 const hasLeaf = computed(() => derivedMeta.hasLeaf);
@@ -87,6 +87,23 @@ const currentChain = computed(() => {
   return ids;
 });
 
+// 所在地点变化时,自动展开新脉络一次(避免「我在哪」被折叠藏起);但只在 currentId 真的
+// 变了时触发,之后用户仍能手动折叠该脉络——这正是和旧「强制展开」的关键区别。
+watch(
+  () => currentId.value,
+  () => {
+    const next = new Set(collapsed.value);
+    let changed = false;
+    for (const cid of currentChain.value) {
+      if (next.delete(cid)) changed = true;
+    }
+    if (changed) {
+      collapsed.value = next;
+      persistCollapsed();
+    }
+  },
+);
+
 function match(a: string, b: string): boolean {
   const x = a.trim();
   const y = b.trim();
@@ -110,13 +127,14 @@ const rows = computed<SceneRow[]>(() => {
     const children = byParent.get(parentId) ?? [];
     children.forEach((node, i) => {
       const kids = byParent.get(node.id) ?? [];
-      // 当前所在脉络上的祖先强制展开,避免把「我在哪」藏起来
-      const forceOpen = currentChain.value.has(node.id);
-      const isCollapsed = kids.length > 0 && collapsed.value.has(node.id) && !forceOpen;
+      // onCurrentPath 仅用于主干线高亮;折叠完全由用户的 collapsed 决定(不再强制展开,
+      // 否则「所在」脉络上的行点了收不起来)。脉络变化时由 watch 自动展开一次,见下方。
+      const onCurrentPath = currentChain.value.has(node.id);
+      const isCollapsed = kids.length > 0 && collapsed.value.has(node.id);
       out.push({
         node,
         depth,
-        onCurrentPath: forceOpen,
+        onCurrentPath,
         isCurrent: node.id === currentId.value,
         lastChild: i === children.length - 1,
         hasChildren: kids.length > 0,
@@ -272,13 +290,13 @@ const removeChildCount = computed(() => {
         <!-- 层级引导轨:每级一条细竖线,在当前脉络上点亮成主干 -->
         <span v-for="d in r.depth" :key="d" class="bbs-scene-rail" :class="{ active: r.onCurrentPath && d <= r.depth }"></span>
 
-        <div class="bbs-scene-card">
-          <!-- 有子节点的行:整行可点折叠;叶子行不可点(无折叠目标) -->
-          <div
-            class="bbs-scene-head"
-            :class="{ clickable: r.hasChildren }"
-            @click="r.hasChildren && toggleCollapse(r.node.id)"
-          >
+        <!-- 有子节点的整张卡片可点折叠(含描述/物品区);叶子卡不可点。操作按钮 @click.stop 不触发 -->
+        <div
+          class="bbs-scene-card"
+          :class="{ clickable: r.hasChildren }"
+          @click="r.hasChildren && toggleCollapse(r.node.id)"
+        >
+          <div class="bbs-scene-head">
             <span
               v-if="r.hasChildren"
               class="bbs-scene-toggle"
@@ -467,11 +485,11 @@ const removeChildCount = computed(() => {
   align-items: center;
   gap: 8px;
 }
-/* 有子节点的行:整行可点折叠,光标提示 + hover 时箭头变深 */
-.bbs-scene-head.clickable {
+/* 有子节点的卡片:整卡可点折叠,光标提示 + hover 时箭头变深 */
+.bbs-scene-card.clickable {
   cursor: pointer;
 }
-.bbs-scene-head.clickable:hover .bbs-scene-toggle {
+.bbs-scene-card.clickable:hover .bbs-scene-toggle {
   color: var(--bbs-ink);
 }
 /* 折叠箭头:展开时朝下(chevron 原样),折叠时朝右(-90°)。纯视觉指示,点击由整行承接。 */
