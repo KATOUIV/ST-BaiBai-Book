@@ -29,6 +29,8 @@ interface ItemEditing {
   name: string;
   qty: string; // 文本承载,空=不改数量
   desc: string;
+  carried: boolean; // 是否随身
+  location: string; // 非随身时的存放地
 }
 const editing = ref<ItemEditing | null>(null);
 
@@ -40,6 +42,8 @@ function openEdit(id: string) {
     name: it.name,
     qty: typeof it.qty === 'number' ? String(it.qty) : '',
     desc: it.desc ?? '',
+    carried: it.carried !== false, // 省略/true 视作随身
+    location: it.location ?? '',
   };
 }
 function cancelEdit() {
@@ -50,10 +54,13 @@ function saveEdit() {
   if (!e || !e.name.trim()) return;
   const qtyStr = e.qty.trim();
   const qty = qtyStr === '' ? undefined : Number(qtyStr);
+  // 随身 → 清空存放地;非随身 → 用填写的地点
   editItem(e.oldName, {
     name: e.name,
     qty: qty !== undefined && Number.isFinite(qty) ? qty : undefined,
     desc: e.desc,
+    carried: e.carried,
+    location: e.carried ? '' : e.location,
   });
   editing.value = null;
 }
@@ -83,6 +90,9 @@ function saveEdit() {
           <div class="bbs-item-main">
             <span class="bbs-item-name">{{ it.name }}</span>
             <span v-if="typeof it.qty === 'number'" class="bbs-item-qty">×{{ it.qty }}</span>
+            <span v-if="it.carried === false && it.location" class="bbs-item-loc">
+              <Icon name="scenes" />{{ it.location }}
+            </span>
           </div>
           <span class="bbs-item-acts">
             <button class="bbs-item-act" type="button" title="编辑" @click="openEdit(it.id)">
@@ -116,6 +126,14 @@ function saveEdit() {
         <label class="bbs-modal-field">
           <span class="bbs-modal-label">数量(留空=不计数)</span>
           <input v-model="editing.qty" class="bbs-input" type="number" min="0" placeholder="不填则不显示数量" />
+        </label>
+        <label class="bbs-modal-field bbs-modal-check">
+          <input v-model="editing.carried" type="checkbox" />
+          <span class="bbs-modal-label">随身携带(取消勾选可指定存放地)</span>
+        </label>
+        <label v-if="!editing.carried" class="bbs-modal-field">
+          <span class="bbs-modal-label">存放地点</span>
+          <input v-model="editing.location" class="bbs-input" type="text" placeholder="如:武器库、家中" />
         </label>
         <label class="bbs-modal-field">
           <span class="bbs-modal-label">描述</span>
@@ -179,6 +197,14 @@ function saveEdit() {
   color: var(--bbs-accent);
   flex-shrink: 0;
 }
+.bbs-item-loc {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--bbs-ink-muted);
+  flex-shrink: 0;
+}
 .bbs-item-desc {
   font-size: 12px;
   color: var(--bbs-ink-muted);
@@ -214,6 +240,15 @@ function saveEdit() {
   resize: vertical;
   min-height: 60px;
   font-family: inherit;
+}
+.bbs-modal-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.bbs-modal-check input {
+  flex-shrink: 0;
 }
 .bbs-empty {
   flex: 1;

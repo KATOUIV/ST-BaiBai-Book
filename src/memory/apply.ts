@@ -594,10 +594,28 @@ export function appendOpToLatestLeaf(op: StoredDelta): boolean {
   const d: StoredDelta = (leaf.delta ??= {});
 
   if (op.items) {
+    // 关键:同名物品在 add/update 与 remove 之间必须互斥(跨桶抵消),否则改名(remove旧+add新)
+    // 往返会让 remove 桶残留旧名,而重放固定按 add→update→remove 分组——最后的 remove 会把刚
+    // add 回来的同名物品删掉(物品离奇消失)。add 桶内仍保留 push 累加,不动「手动+1」语义。
     const di = (d.items ??= {});
-    if (op.items.add?.length) (di.add ??= []).push(...op.items.add);
-    if (op.items.update?.length) (di.update ??= []).push(...op.items.update);
-    if (op.items.remove?.length) (di.remove ??= []).push(...op.items.remove);
+    for (const name of op.items.remove ?? []) {
+      const id = itemId(name);
+      // 删除压倒本叶子内对该名的 add/update;再登记待删(去重,prior 叶子的该物品靠它删除)
+      if (di.add) di.add = di.add.filter(a => itemId(a.name) !== id);
+      if (di.update) di.update = di.update.filter(u => itemId(u.name) !== id);
+      di.remove = [...(di.remove ?? []).filter(n => itemId(n) !== id), name];
+    }
+    for (const a of op.items.add ?? []) {
+      if (di.remove) di.remove = di.remove.filter(n => itemId(n) !== itemId(a.name)); // 撤销同名待删
+      (di.add ??= []).push(a);
+    }
+    for (const u of op.items.update ?? []) {
+      if (di.remove) di.remove = di.remove.filter(n => itemId(n) !== itemId(u.name));
+      (di.update ??= []).push(u);
+    }
+    if (di.add && !di.add.length) delete di.add;
+    if (di.update && !di.update.length) delete di.update;
+    if (di.remove && !di.remove.length) delete di.remove;
   }
   if (op.scenes) {
     const ds = (d.scenes ??= {});
@@ -634,26 +652,34 @@ export function appendOpToLatestLeaf(op: StoredDelta): boolean {
 
 /**
  * 手动编辑一个物品(派生数据,写回最新叶子的 delta)。
- *  - 改名:物品 id 按规范化名确定,改名等于换 id → 用 remove(旧名) + add(新名,带 qty/desc) 表达。
- *  - 仅改 qty/desc:用 update(按原名匹配,设为新值)。
+ *  - 改名:物品 id 按规范化名确定,改名等于换 id → 用 remove(旧名) + add(新名,带 qty/desc/位置) 表达。
+ *  - 仅改 qty/desc/位置:用 update(按原名匹配,设为新值)。
  * 两种都经 appendOpToLatestLeaf 落到最新叶子。无有效叶子时返回 false。
+ *
+ * 位置(carried/location):patch 未显式给时,改名场景从派生的旧物品继承——否则改个名字
+ * 就把「在武器库」这类存放信息丢了(用 add 重建会丢非 add 字段)。
  */
 export function editItem(
   oldName: string,
-  patch: { name?: string; qty?: number; desc?: string },
+  patch: { name?: string; qty?: number; desc?: string; carried?: boolean; location?: string },
 ): boolean {
   const newName = patch.name?.trim() || oldName;
   const desc = patch.desc?.trim() || undefined;
   const qty = typeof patch.qty === 'number' && Number.isFinite(patch.qty) ? patch.qty : undefined;
 
+  // 位置:patch 明确给了用 patch 的;否则从旧物品继承(改名不丢存放地)
+  const prev = memory.items.find(i => i.id === itemId(oldName));
+  const carried = patch.carried !== undefined ? patch.carried : prev?.carried;
+  const location = patch.location !== undefined ? (patch.location.trim() || undefined) : prev?.location;
+
   if (norm(newName) !== norm(oldName)) {
     // 改名:先删旧,再以新名重建(qty 用 add 语义,但旧的已删,等于设为该值)
     return appendOpToLatestLeaf({
-      items: { remove: [oldName], add: [{ name: newName, qty, desc }] },
+      items: { remove: [oldName], add: [{ name: newName, qty, desc, carried, location }] },
     });
   }
-  // 同名:更新数量/描述(update 是「设为新值」)
-  return appendOpToLatestLeaf({ items: { update: [{ name: newName, qty, desc }] } });
+  // 同名:更新数量/描述/位置(update 是「设为新值」)
+  return appendOpToLatestLeaf({ items: { update: [{ name: newName, qty, desc, carried, location }] } });
 }
 
 /* ============ 场景手动 op(写回最新叶子,与 editItem 同范式) ============ */
