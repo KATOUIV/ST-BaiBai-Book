@@ -8,7 +8,7 @@ import { toast } from '@/st/toast';
 import { addSummary, deriveMemory, finalizeDelta, getLeaf, itemChangesOf, leafValid, makeLeafId, pruneBrokenComps, syncItemLogFromMessage } from './apply';
 import { extractJsonObject } from './json';
 import { clearInjection, refreshInjection, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
-import { buildBatchSummaryPrompt, buildBatchThinking, buildCharCardSystem, buildResummaryPrompt, buildSummaryPrompt, buildWorldInfoSystem, fmtItemLogInline, JAILBREAK_PROMPT, THINKING_CHECKLIST, THINKING_PREFILL } from './prompts';
+import { buildBatchSummaryPrompt, buildBatchThinking, buildCharCardSystem, buildResummaryPrompt, buildSummaryPrompt, buildWorldInfoSystem, fmtItemLogInline, JAILBREAK_PROMPT, selectRecentResolvedPlans, THINKING_CHECKLIST, THINKING_PREFILL } from './prompts';
 import { clampToTimeTags, cleanBody, parseTimeRange, syncTimeTagRegex, writeItemLogTag } from './timeTag';
 import { memory, recomputeDerived, scheduleLeafFlush } from './store';
 import type { LeafExtra, SummaryDelta } from './types';
@@ -675,6 +675,8 @@ async function summarizeFloorWork(
     scenes: stateBefore.scenes.map(s => ({ path: s.path, desc: s.desc })),
     npcs: stateBefore.npcs.map(n => ({ name: n.name, title: n.title, important: n.important, outfit: n.outfit, condition: n.condition, follow: n.follow, location: n.location })),
     openPlans: openPlansOrdered.map(p => ({ kind: p.kind, content: p.content, createdTime: p.createdTime, targetTime: p.targetTime })),
+    // 近期已完成计划:与注入端同口径,截止点用本楼之前的状态(不泄漏未来)
+    resolvedPlans: selectRecentResolvedPlans(stateBefore.plans, apiSettings.recentResolvedPlansCount),
     history,
     content,
     hasTimeTags,

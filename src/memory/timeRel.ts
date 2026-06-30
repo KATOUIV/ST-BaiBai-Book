@@ -255,6 +255,27 @@ function monthDiff(from: Date, to: Date): number {
 }
 
 /**
+ * 算某个故事内时间的「周几」(周日…周六),仅在**纯数字公历且带年份**时给出,否则空串。
+ *
+ * 严格门槛(与相对时间口语档同一套考量,见 relativeTimeLabel 的 calendarPrefix 注释):
+ *  - 必须 type==='standard':架空日历(霜月/含 XX 占位)算不出星期。
+ *  - 必须有 year:M/D 这类无年份的写法定不了具体哪一天,星期无从谈起。
+ *  - 必须无 calendarPrefix:庆历/元持/星历… 是古风/赛博纪年,套公历星期既出戏,
+ *    且小年份(year=12)getDay() 算的是公元 12 年真实星期、值不可控 → 一律不标。
+ * 用 setFullYear 建 Date(避开 Date 对小年份的偏移),与 toDatePair 同款。
+ * 一句话:能确定到公历某一天才标星期,否则宁可不标。
+ */
+export function weekdayLabel(timeStr?: string): string {
+  const s = timeStr?.trim();
+  if (!s) return '';
+  const d = parseStoryDate(s);
+  if (!d || d.type !== 'standard' || d.year == null || d.calendarPrefix) return '';
+  const obj = new Date(0);
+  obj.setFullYear(d.year, (d.month ?? 1) - 1, d.day ?? 1);
+  return `周${WEEKDAY_NAMES[obj.getDay()]}`;
+}
+
+/**
  * 把「事件时间 event」相对「现在 now」格式化成相对前缀文本。
  * 解析不出 / 无法判定 → 返回空串(调用方据此不加前缀)。
  */

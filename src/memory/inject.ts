@@ -14,10 +14,10 @@ import { apiSettings, engineActiveHere } from '@/api/settings';
 import type { STMessage } from '@/st/context';
 import { getContext } from '@/st/context';
 import { findCurrentSceneId, getLeaf, leafValid } from './apply';
-import { fmtItems, fmtPlans, MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END } from './prompts';
+import { fmtItems, fmtPlans, fmtResolvedPlans, selectRecentResolvedPlans, MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END } from './prompts';
 import { memory } from './store';
 import { compactTimeLabel, formatRange, latestStoryTime, splitTimeLabel, timeTagPrompt } from './timeTag';
-import { relativeTimeLabel } from './timeRel';
+import { relativeTimeLabel, weekdayLabel } from './timeRel';
 import { selectViewNodes, type ViewNode } from './select';
 import type { LeafExtra, MemNpc, MemScene, MemSummary } from './types';
 
@@ -197,14 +197,18 @@ function nodeEventTime(n: ViewNode): string {
  *
  * ⚠️ 仅**叶子**(未压缩的单楼摘要)加相对前缀:它指向某一刻、相对距离有意义。
  * 压缩节点(总结)跨多楼、本身就是一段时间范围,标个「(昨天)」反而误导主模型、易出错 —— 只给绝对时间。
+ *
+ * 周几与相对时间并入同一个括号(相对·周三);仅标准公历带年份才有周几(weekdayLabel 自带门槛)。
  */
 function renderHistoryNodesWithRelative(nodes: ViewNode[], now: string): string {
   return nodes
     .map(n => {
       const t = nodeTime(n);
       if (!t) return n.text;
-      const rel = n.kind === 'leaf' ? relativeTimeLabel(nodeEventTime(n), now) : '';
-      return rel ? `【(${rel}) ${t}】${n.text}` : `【${t}】${n.text}`;
+      if (n.kind !== 'leaf') return `【${t}】${n.text}`;
+      const event = nodeEventTime(n);
+      const parts = [relativeTimeLabel(event, now), weekdayLabel(event)].filter(Boolean);
+      return parts.length ? `【(${parts.join('·')}) ${t}】${n.text}` : `【${t}】${n.text}`;
     })
     .join('\n\n');
 }
@@ -380,7 +384,11 @@ function fmtNpcContext(npcs: MemNpc[], here: string, chain: MemScene[]): string 
 /** 组合当前结构化状态注入文本;无有意义状态时返回空串。 */
 export function buildStateInjectionText(): string {
   const st: string[] = [];
-  if (memory.state.time) st.push(`当前时间:${memory.state.time}`);
+  if (memory.state.time) {
+    // 周几只在标准公历带年份时有(weekdayLabel 自带门槛),古风/架空时间不标
+    const wd = weekdayLabel(memory.state.time);
+    st.push(`当前时间:${memory.state.time}${wd ? ` (${wd})` : ''}`);
+  }
   if (memory.state.location) st.push(`当前地点:${memory.state.location}`);
 
   const here = memory.state.location || '';
@@ -414,6 +422,11 @@ export function buildStateInjectionText(): string {
     .filter(p => p.status === 'open')
     .map(p => ({ kind: p.kind, content: p.content, createdTime: p.createdTime, targetTime: p.targetTime }));
   st.push(`未了结的计划/悬念:\n${fmtPlans(openPlans)}`);
+
+  // 近期已完成的计划/悬念:防 AI 把刚了结的当未完成又去推进。与副API摘要同口径,只差截止点
+  // (这里用全量 memory.plans;副API用 deriveMemory(chat, beforeIndex).plans)。
+  const recentResolved = selectRecentResolvedPlans(memory.plans, apiSettings.recentResolvedPlansCount);
+  if (recentResolved.length) st.push(`近期已完成(已了结,勿当未完成再推进/重复记录):\n${fmtResolvedPlans(recentResolved)}`);
 
   // 状态块在有任何有意义内容时才注入(物品/计划即使空也会有「(无)」占位,
   // 但只要存在摘要或时间/地点就值得带上整块)

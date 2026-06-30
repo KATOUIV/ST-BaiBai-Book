@@ -818,6 +818,11 @@ function scorePct(score: number): number {
         </label>
         <p class="bbs-field-hint">总结达到多少条后再次进行总结,0 为关闭二次总结。</p>
         <label class="bbs-num-row">
+          <span class="bbs-field-label">附带近期已完成计划</span>
+          <input v-model.number="apiSettings.recentResolvedPlansCount" class="bbs-input bbs-num" type="number" min="0" />
+        </label>
+        <p class="bbs-field-hint">在状态快照里附带「已完成的计划/悬念」,提醒 AI 别把刚了结的事又当未完成去推进或重复记录;主模型注入与摘要副API同时附带。计划、悬念各取最近这么多条(如填 5 = 最多计划 5 + 悬念 5)。0 为不附带,默认 5。</p>
+        <label class="bbs-num-row">
           <span class="bbs-field-label">失败重试次数</span>
           <input v-model.number="apiSettings.summaryMaxRetries" class="bbs-input bbs-num" type="number" min="0" />
         </label>

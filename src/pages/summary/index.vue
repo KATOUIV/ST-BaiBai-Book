@@ -7,7 +7,7 @@ import { apiSettings } from '@/api/settings';
 import { batchBackfill, batchState, cancelBatchBackfill, engineState, resummarizeNow, summarizeFloor } from '@/memory/engine';
 import { refreshInjection, selectViewNodes, type ViewNode } from '@/memory/inject';
 import { compactTimeLabel, formatRange, splitTimeLabel } from '@/memory/timeTag';
-import { relativeTimeLabel } from '@/memory/timeRel';
+import { relativeTimeLabel, weekdayLabel } from '@/memory/timeRel';
 import { derivedMeta, memory, recomputeDerived } from '@/memory/store';
 import { computed, nextTick, onMounted, ref } from 'vue';
 
@@ -313,16 +313,19 @@ function rowTime(r: Row): string {
   if (r.timeStart || r.timeEnd) return formatRange(r.timeStart, r.timeEnd);
   return r.timeLabel ? compactTimeLabel(r.timeLabel) : '';
 }
-/** 行的相对时间前缀(如「昨天」):仅叶子(单楼摘要)显示;总结跨多楼、相对时间无意义,返回空串 */
+/** 行的相对时间前缀(如「昨天·周三」):仅叶子(单楼摘要)显示;总结跨多楼、相对时间无意义,返回空串 */
 function rowRelative(r: Row): string {
   if (r.kind !== 'leaf') return '';
   const event = r.timeEnd || r.timeStart || (r.timeLabel ? splitTimeLabel(r.timeLabel).end : '') || '';
-  return relativeTimeLabel(event, derivedMeta.latestStoryTime);
+  // 周几并入相对前缀(标准公历带年份才有);与注入端口径一致
+  return [relativeTimeLabel(event, derivedMeta.latestStoryTime), weekdayLabel(event)].filter(Boolean).join('·');
 }
 
 // 当前时间:优先读正文标签实时算出的「故事内最新时间」(不受最新楼是否已摘影响);
 // 取不到再回退派生的 state.time(老数据/无标签场景)。修掉「最新楼未摘时显示旧时间」的问题。
 const currentTime = computed(() => derivedMeta.latestStoryTime || memory.state.time);
+/** 当前时间的周几(仅标准公历带年份才有);展示用 */
+const currentWeekday = computed(() => weekdayLabel(currentTime.value));
 
 function levelLabel(level: number): string {
   if (level === 0) return '摘要';
@@ -512,7 +515,7 @@ function saveEdit() {
     <div v-if="currentTime || memory.state.location" class="bbs-state">
       <div v-if="currentTime" class="bbs-state-item">
         <span class="bbs-state-key">时间</span>
-        <span class="bbs-state-val">{{ currentTime }}</span>
+        <span class="bbs-state-val">{{ currentTime }}<template v-if="currentWeekday"> ({{ currentWeekday }})</template></span>
       </div>
       <div v-if="memory.state.location" class="bbs-state-item">
         <span class="bbs-state-key">地点</span>
