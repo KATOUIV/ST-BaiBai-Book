@@ -83,6 +83,12 @@ export interface VectorRecallSettings {
   fullTextCount: number;
   /** 最终召回条数(上限):全文档 + 摘要档合计不超过它 */
   finalRecallCount: number;
+  /**
+   * 召回起始 AI 楼数:当前聊天 AI 消息数少于此值时**不触发召回**(0=不限制)。
+   * 用 AI 消息数计(与 keepRecent 同口径),避免和「楼层」混淆。
+   * 早期剧情还没多少旧记忆可召,跳过可省额度/延迟;「带数据建新对话」的旧档不受此限(始终召回)。
+   */
+  minAiFloors: number;
 }
 
 /** 向量记忆设置。embedding 为基准,rerank/queryRewrite 的 url 留空则整体复用 embedding。 */
@@ -213,6 +219,7 @@ function defaults(): ApiSettings {
         rerankThreshold: 0.9,
         fullTextCount: 2,
         finalRecallCount: 5,
+        minAiFloors: 0,
       },
     },
     channels: [],
@@ -274,6 +281,11 @@ function normalize(raw: unknown): ApiSettings {
     queryRewrite: normalizeVectorEndpoint(rv.queryRewrite),
     recall: { ...d.vector.recall, ...(rv.recall ?? {}) },
   };
+  // 召回起始 AI 楼数:非负整数,缺失/非法回退 0(不限制)
+  merged.vector.recall.minAiFloors =
+    Number.isFinite(merged.vector.recall.minAiFloors) && merged.vector.recall.minAiFloors >= 0
+      ? Math.floor(merged.vector.recall.minAiFloors)
+      : 0;
   // 副 API 渠道:逐个补全新加的字段(老数据没有 stream/excludeParams),并校验类型
   merged.channels = (Array.isArray(merged.channels) ? merged.channels : []).map(normalizeChannel);
   // 字数档位:仅两个合法值,旧数据缺失/非法回退详细(= 老用户行为不变)

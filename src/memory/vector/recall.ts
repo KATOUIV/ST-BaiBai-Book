@@ -22,8 +22,8 @@ import { MEMORY_BRIEFING_NOTE, MEMORY_BRIEFING_END } from '../prompts';
 import { embedTexts, encodeFloat32Base64, rerankDocuments } from './embed';
 import { rewriteQuery } from './rewrite';
 import { ensureRecallIndex } from './index';
-import { currentChatId, currentChatScope, currentVectorDb, recallScopes } from './scope';
-import { resolveKeepStart } from '../engine';
+import { currentBundleHashes, currentChatId, currentChatScope, currentVectorDb, recallScopes } from './scope';
+import { isAiFloor, resolveKeepStart } from '../engine';
 import { cleanBody, compactTimeLabel, latestStoryTime, splitTimeLabel } from '../timeTag';
 import { relativeTimeLabel } from '../timeRel';
 import {
@@ -67,6 +67,29 @@ function windowLeafIds(chat: STMessage[]): string[] {
     if (leafValid(chat[i])) ids.push(getLeaf(chat[i])!.id);
   }
   return ids;
+}
+
+/** 当前聊天 AI 楼数(与 keepRecent/minAiFloors 同口径:只数 AI 消息)。 */
+function aiFloorCount(chat: STMessage[]): number {
+  let n = 0;
+  for (const m of chat) if (isAiFloor(m)) n++;
+  return n;
+}
+
+/**
+ * 本回合是否值得跑召回。带数据建新对话的旧档(bundle)始终值得召回——里面是当前聊天没有的旧记忆,
+ * 不受任何阈值限制,直接放行。无 bundle 时才看本聊天是否有「窗口外」可召的旧楼:
+ *  - resolveKeepStart===0:没有任何 AI 楼被推出滑动窗口,全在窗口内全文发送,
+ *    召回的旧楼都会被 windowLeafIds 排除掉,纯属浪费(重写+embed+search+rerank 的额度与延迟)→ 跳过。
+ *  - AI 楼数 < minAiFloors(用户设的起召门槛):早期剧情旧记忆少,用户嫌没必要 → 跳过。
+ * 任一跳过条件命中即返回 false;否则 true。
+ */
+function recallWorthRunning(chat: STMessage[]): boolean {
+  if (currentBundleHashes().length > 0) return true; // 旧档无条件召回
+  if (resolveKeepStart(chat) === 0) return false; // 全在窗口内,无窗口外旧楼可召
+  const min = Math.max(0, apiSettings.vector.recall.minAiFloors);
+  if (min > 0 && aiFloorCount(chat) < min) return false; // 未达用户起召门槛
+  return true;
 }
 
 /** 轻量稳定 hash(FNV-1a,16 进制),与 index.ts 同口径。用于缓存 key 的内容指纹。 */
@@ -199,6 +222,13 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
   const chat = ctx?.chat ?? [];
   const fn = ctx?.setExtensionPrompt;
   if (typeof fn !== 'function' || !chat.length) return;
+
+  // 楼层还少 / 全在窗口内且无旧档:本回合无召回价值,跳过整条管线(清空注入槽,避免残留上次召回)。
+  if (!recallWorthRunning(chat)) {
+    setRecallStatus('未召回:楼层未达起召门槛或全在窗口内');
+    clearRecallInjection();
+    return;
+  }
 
   const cfg = apiSettings.vector.recall;
   const scopes = recallScopes();

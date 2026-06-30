@@ -302,6 +302,8 @@ const VECTOR_ROLES: VectorRoleMeta[] = [
 
 /* —— 向量端点:每角色直接填 地址/密钥/模型;模型可一键拉取(combobox)。 —— */
 const vecShowKey = ref<Record<VectorRole, boolean>>({ embedding: false, rerank: false, queryRewrite: false });
+// 三个端点卡片各自折叠,默认全收起,只露标题,需要时再展开。
+const vecEpOpen = ref<Record<VectorRole, boolean>>({ embedding: false, rerank: false, queryRewrite: false });
 const vecModels = ref<Record<VectorRole, string[]>>({ embedding: [], rerank: [], queryRewrite: [] });
 const vecLoadingModels = ref<Record<VectorRole, boolean>>({ embedding: false, rerank: false, queryRewrite: false });
 const vecModelMsg = ref<Record<VectorRole, string>>({ embedding: '', rerank: '', queryRewrite: '' });
@@ -900,25 +902,35 @@ function scorePct(score: number): number {
 
       <!-- 向量记忆 -->
       <Collapsible title="向量记忆" :open="false">
-        <label class="bbs-switch-row">
+        <label class="bbs-switch-row bbs-vec-enable">
           <span class="bbs-field-label">启用向量记忆</span>
           <input v-model="apiSettings.vector.enabled" type="checkbox" class="bbs-checkbox" />
         </label>
 
-        <hr class="bbs-rule" />
+        <hr class="bbs-rule bbs-vec-enable-rule" />
 
         <!-- 三个端点:Embedding 必填;Rerank/Query 地址留空 = 整体复用 Embedding。
-             每块直接填地址/密钥/模型,模型可一键拉取(无需「渠道」中转)。 -->
+             卡片自身可折叠(点标题栏),无额外外框;副标显当前模型,收起也看得出配没配。 -->
         <div
           v-for="role in VECTOR_ROLES"
           :key="role.key"
           class="bbs-vec-ep"
-          :class="{ 'is-disabled': !apiSettings.vector.enabled }"
+          :class="{ 'is-disabled': !apiSettings.vector.enabled, 'is-collapsed': !vecEpOpen[role.key] }"
         >
-          <div class="bbs-vec-head">
+          <button
+            type="button"
+            class="bbs-vec-head bbs-vec-toggle"
+            :aria-expanded="vecEpOpen[role.key]"
+            @click="vecEpOpen[role.key] = !vecEpOpen[role.key]"
+          >
             <span class="bbs-field-label">{{ role.label }}</span>
-            <span v-if="role.key !== 'embedding'" class="bbs-vec-reuse-tag">地址/密钥可留空复用</span>
-          </div>
+            <Icon name="chevron" class="bbs-vec-chevron" />
+          </button>
+
+          <div class="bbs-vec-ep-outer">
+            <div class="bbs-vec-ep-inner">
+          <div class="bbs-vec-ep-body">
+          <p v-if="role.key !== 'embedding'" class="bbs-field-hint">地址 / 密钥留空即复用 Embedding;模型仍需各自填写。</p>
 
           <label class="bbs-modal-field">
             <span class="bbs-modal-label">API 地址</span>
@@ -997,23 +1009,26 @@ function scorePct(score: number): number {
             </div>
           </label>
           <p v-if="vecModelMsg[role.key]" class="bbs-field-hint">{{ vecModelMsg[role.key] }}</p>
+          </div>
+            </div>
+          </div>
         </div>
 
         <hr class="bbs-rule" />
 
-        <!-- 召回参数:候选数 → 阈值分档 → 条数上限 -->
-        <div class="bbs-vec-recall" :class="{ 'is-disabled': !apiSettings.vector.enabled }">
-          <div class="bbs-vec-head"><span class="bbs-field-label">召回参数</span></div>
-          <p class="bbs-field-hint">
-            先对全部向量索引算 embedding 相似度,取得分最高的若干条进入 rerank;rerank 打分后分两档:
-            得分高的发原文全文,稍低但仍过 embedding 阈值的发摘要;两档合计不超过「最终召回条数」。
-          </p>
+        <!-- 召回参数:机制说明 + 进阶旋钮整体折叠,默认收起,不淹没上方端点配置。 -->
+        <Collapsible title="召回参数" :open="false">
+          <div class="bbs-vec-recall" :class="{ 'is-disabled': !apiSettings.vector.enabled }">
+            <p class="bbs-field-hint">
+              先对全部向量索引算 embedding 相似度,取得分最高的若干条进入 rerank;rerank 打分后分两档:
+              得分高的发原文全文,稍低但仍过 embedding 阈值的发摘要;两档合计不超过「最终召回条数」。
+            </p>
 
-          <p class="bbs-field-hint">
-            生成前用小模型(上方「Query 重写」)把当前剧情重写成多条检索 query,多路召回更全面。
-            <strong>查询重写为召回必经步骤,须配好「Query 重写」模型;未配或重写失败则本回合不召回。</strong>
-            每回合多一次小模型请求(略增延迟)。
-          </p>
+            <p class="bbs-field-hint">
+              生成前用小模型(上方「Query 重写」)把当前剧情重写成多条检索 query,多路召回更全面。
+              <strong>查询重写为召回必经步骤,须配好「Query 重写」模型;未配或重写失败则本回合不召回。</strong>
+              每回合多一次小模型请求(略增延迟)。
+            </p>
 
           <label class="bbs-num-row">
             <span class="bbs-field-label">Rerank 候选数</span>
@@ -1078,7 +1093,23 @@ function scorePct(score: number): number {
             />
           </label>
           <p class="bbs-field-hint">召回总条数上限(全文 + 摘要合计);全文不够用摘要补,补不满也无妨。</p>
-        </div>
+
+          <label class="bbs-num-row">
+            <span class="bbs-field-label">起召 AI 楼数</span>
+            <input
+              v-model.number="apiSettings.vector.recall.minAiFloors"
+              class="bbs-input bbs-num"
+              type="number"
+              min="0"
+              :disabled="!apiSettings.vector.enabled"
+            />
+          </label>
+          <p class="bbs-field-hint">
+            当前聊天 AI 消息数少于此值时不触发召回(0=不限制)。早期剧情旧记忆少,跳过可省额度/延迟。
+            另:当所有消息都还在滑动窗口内全文发送时也会自动跳过(无窗口外旧楼可召);「带数据建新对话」的旧档不受此限,始终召回。
+          </p>
+          </div>
+        </Collapsible>
 
         <hr class="bbs-rule" />
 
@@ -1918,6 +1949,14 @@ function scorePct(score: number): number {
   gap: 12px;
   padding: 8px 0;
 }
+/* 「启用向量记忆」是折叠区里独一行开关,不再额外加上 padding,贴合标题节奏 */
+.bbs-vec-enable {
+  padding-top: 0;
+}
+/* 紧跟开关行的分割线收掉上边距:开关行自带 8px 下 padding 已够,避免整块显得空旷 */
+.bbs-vec-enable-rule {
+  margin-top: 0;
+}
 .bbs-checkbox {
   width: 18px;
   height: 18px;
@@ -2035,14 +2074,51 @@ function scorePct(score: number): number {
   gap: 8px;
   margin-bottom: 10px;
 }
-/* 「复用 Embedding / 独立端点」状态小标签 */
-.bbs-vec-reuse-tag {
-  font-size: 11px;
+/* 端点卡片折叠头:整条标题栏可点;收起时去掉下间距,卡片只剩一行标题。 */
+.bbs-vec-toggle {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--bbs-ink);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.bbs-vec-toggle:focus-visible {
+  outline: 2px solid var(--bbs-accent);
+  outline-offset: 4px;
+  border-radius: var(--bbs-radius-sm);
+}
+/* 折叠头不自带下间距,改由 body 的 padding-top 统一供给,
+   这样三块标题到首行内容的距离一致(不受有无提示行影响),收起时随 grid 一并归零。 */
+.bbs-vec-toggle.bbs-vec-head {
+  margin-bottom: 0;
+}
+.bbs-vec-ep-body {
+  padding-top: 12px;
+}
+.bbs-vec-chevron {
+  font-size: 18px;
   color: var(--bbs-ink-muted);
-  padding: 1px 8px;
-  border: 1px solid var(--bbs-line);
-  border-radius: 999px;
-  white-space: nowrap;
+  transition: transform var(--bbs-dur) var(--bbs-ease);
+}
+.bbs-vec-ep.is-collapsed .bbs-vec-chevron {
+  transform: rotate(-90deg);
+}
+/* 展开动画:照搬 Collapsible 的 grid 0fr<->1fr,内容自适应高度,无需测量。 */
+.bbs-vec-ep-outer {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--bbs-dur) var(--bbs-ease);
+}
+.bbs-vec-ep.is-collapsed .bbs-vec-ep-outer {
+  grid-template-rows: 0fr;
+}
+.bbs-vec-ep-inner {
+  min-height: 0;
+  overflow: hidden;
 }
 /* 向量后端类型标签:与摘要列表的「总结」标签同款(实心填充、白字),后端=强调色,本地降级=警告色 */
 .bbs-vec-backend {
