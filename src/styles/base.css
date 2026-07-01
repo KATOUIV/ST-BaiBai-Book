@@ -320,6 +320,222 @@
   max-width: 32ch;
 }
 
+/* ========== 摘要卡片(summary card)==========
+   摘要页默认视图(SummaryNode.vue 递归)与搜索/选择的平铺列表(index.vue)共用同一张卡片。
+   scoped 样式不跨子组件边界(shadow DOM 内同理),故卡片视觉提到全局 base.css,
+   两处渲染才一致——与 .bbs-btn / .bbs-modal 等跨页原子同款处置。 */
+.bbs-summary-card {
+  border: 1px solid var(--bbs-line);
+  border-radius: var(--bbs-radius);
+  background: var(--bbs-surface);
+  padding: 14px 16px;
+}
+/* 展开出的子行:弱化(淡底 + 虚线边),视觉上从属于上方的总结 */
+.bbs-summary-card.is-child {
+  background: var(--bbs-surface-2);
+  border-style: dashed;
+}
+/* 深层总结 / 展开态:左缘点亮强调色(展开态即时反馈「这条已展开」) */
+.bbs-summary-card.is-deep,
+.bbs-summary-card.is-expanded {
+  border-left: 3px solid var(--bbs-accent);
+}
+.bbs-summary-card.is-stale {
+  opacity: 0.6;
+}
+.bbs-summary-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+/* 绝对时间作题首文本,line-height:1 让它与同行等高标签的视觉中心对齐 */
+.bbs-summary-dateline,
+.bbs-summary-time {
+  line-height: 1;
+}
+/* 摘要题首:故事内时间升为主标题,稍大、半粗、tabular 数字像账册日期 */
+.bbs-summary-dateline {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--bbs-ink);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+/* 标签与楼层号:高度一致(同 height + 居中);楼层号最小宽 = 摘要标签宽,数字变长再撑开 */
+.bbs-summary-badge,
+.bbs-summary-loc {
+  box-sizing: border-box;
+  height: 22px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--bbs-radius-sm);
+}
+.bbs-summary-badge {
+  color: var(--bbs-accent-ink);
+  background: var(--bbs-accent);
+  border: 1px solid var(--bbs-accent); /* 与 loc 同样 1px 边框,保证两者等高 */
+}
+/* 楼层号/收纳数:描边定位标签;tabular 数字对齐 */
+.bbs-summary-loc {
+  color: var(--bbs-ink-soft);
+  background: var(--bbs-surface-2);
+  border: 1px solid var(--bbs-line);
+  font-variant-numeric: tabular-nums;
+}
+.bbs-summary-time {
+  font-size: 12px;
+  color: var(--bbs-ink-soft);
+}
+/* 相对时间(昨天/3天前…):等高小标签,与楼层药丸同高,靠盒子居中免去 CJK 基线下沉 */
+.bbs-summary-rel {
+  box-sizing: border-box;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--bbs-radius-sm);
+  color: var(--bbs-accent);
+  background: var(--bbs-accent-soft);
+  border: 1px solid var(--bbs-accent);
+}
+.bbs-summary-stale {
+  font-size: 11px;
+  color: var(--bbs-warning);
+  background: var(--bbs-warning-soft);
+  border-radius: var(--bbs-radius-sm);
+  padding: 2px 8px;
+}
+/* 动作组靠右;平时隐身,hover/聚焦该卡才浮现 */
+.bbs-summary-acts {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.bbs-summary-card:hover .bbs-summary-acts,
+.bbs-summary-card:focus-within .bbs-summary-acts {
+  opacity: 1;
+}
+.bbs-summary-act {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--bbs-ink-muted);
+  border-radius: var(--bbs-radius-sm);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.bbs-summary-act:hover {
+  color: var(--bbs-accent);
+  background: var(--bbs-surface-2);
+}
+.bbs-summary-del:hover {
+  color: var(--bbs-danger);
+  background: var(--bbs-danger-soft);
+}
+.bbs-summary-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.8;
+  letter-spacing: 0.025em;
+  color: var(--bbs-ink-soft);
+  white-space: pre-wrap;
+}
+/* —— 展开开关:卡片底部整条(而非左侧小箭头),整条可点、目标大(移动端友好),
+   顶部细线与正文隔开,像卡片的「页脚操作区」。明确标注「展开/收起下层 N 条」。 */
+.bbs-expand-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 6px 2px 0;
+  border: 0;
+  border-top: 1px solid var(--bbs-line);
+  width: 100%;
+  background: transparent;
+  color: var(--bbs-ink-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.bbs-expand-bar:hover {
+  color: var(--bbs-accent);
+}
+.bbs-expand-caret {
+  transition: transform 0.2s ease;
+}
+.bbs-expand-caret.is-collapsed {
+  transform: rotate(-90deg);
+}
+/* —— 组尾收起条:展开内容末尾的就地收回入口(滚到底不必翻回顶部)。
+   虚线上边、无卡底,像「合上这一叠」的收口。 */
+.bbs-collapse-footer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px dashed var(--bbs-line-strong);
+  border-radius: var(--bbs-radius);
+  background: transparent;
+  color: var(--bbs-ink-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.bbs-collapse-footer:hover {
+  color: var(--bbs-accent);
+  border-color: var(--bbs-accent);
+  background: var(--bbs-accent-soft);
+}
+/* 收起条箭头恒朝上(收起方向) */
+.bbs-collapse-caret {
+  transform: rotate(180deg);
+}
+/* 触屏无 hover:动作键常显但保持小而 muted;触达区放大到 ~32px */
+@media (hover: none) {
+  .bbs-summary-acts {
+    opacity: 1;
+  }
+  .bbs-summary-act {
+    width: 32px;
+    height: 32px;
+    font-size: 15px;
+    color: var(--bbs-ink-muted);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bbs-expand-caret {
+    transition: none;
+  }
+}
+/* 窄屏:绝对时间(纯文本较长)排到末尾独占一行,首行只留标签 + 操作键 */
+@media (max-width: 640px) {
+  .bbs-summary-dateline,
+  .bbs-summary-time {
+    order: 99;
+    flex-basis: 100%;
+  }
+}
+
 /* —— 隐藏滚动条(保留滚动能力):整个 UI 内统一 —— */
 .bbs-root * {
   scrollbar-width: none; /* Firefox */

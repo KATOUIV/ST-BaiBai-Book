@@ -1163,6 +1163,142 @@ export async function checkResummary(): Promise<number> {
   return made;
 }
 
+/* ============ 手动强制总结(多选合并,无视阈值) ============ */
+
+/** 一个可被合并的节点(叶子或压缩节点)在引擎里的统一视图。 */
+interface SelectableNode {
+  id: string;
+  text: string;
+  level: number; // 叶子=0,comp=其层级
+  timeStart?: string;
+  timeEnd?: string;
+  floorLo: number; // 覆盖楼层下界(叶子=自身楼层;comp=后代叶子最小);无则 -1
+  floorHi: number; // 覆盖楼层上界
+}
+
+/**
+ * 解析当前森林里「所有节点」的统一视图 + 覆盖楼层。
+ * 叶子来自 chat(有效叶子),楼层 = msgIndex;comp 来自 memory.summaries,楼层 = 递归后代叶子 min..max。
+ * 供 summarizeSelected 排序、取时间范围、算覆盖范围。
+ */
+function collectSelectableNodes(chat: STMessage[]): Map<string, SelectableNode> {
+  const map = new Map<string, SelectableNode>();
+  // 叶子:id → 楼层
+  const leafFloor = new Map<string, number>();
+  for (let i = 0; i < chat.length; i++) {
+    if (!leafValid(chat[i])) continue;
+    const lf = getLeaf(chat[i]) as LeafExtra;
+    leafFloor.set(lf.id, i);
+    map.set(lf.id, { id: lf.id, text: lf.text, level: 0, timeStart: lf.timeStart, timeEnd: lf.timeEnd, floorLo: i, floorHi: i });
+  }
+  // comp:递归解析后代叶子楼层
+  const byComp = new Map(memory.summaries.map(s => [s.id, s]));
+  const floorsOf = (id: string, seen: Set<string>, acc: number[]): void => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const lf = leafFloor.get(id);
+    if (lf !== undefined) { acc.push(lf); return; }
+    const c = byComp.get(id);
+    if (!c) return;
+    for (const cid of c.childIds ?? []) floorsOf(cid, seen, acc);
+  };
+  for (const s of memory.summaries) {
+    const floors: number[] = [];
+    floorsOf(s.id, new Set(), floors);
+    const lo = floors.length ? Math.min(...floors) : -1;
+    const hi = floors.length ? Math.max(...floors) : -1;
+    map.set(s.id, { id: s.id, text: s.text, level: s.level, timeStart: s.timeStart, timeEnd: s.timeEnd, floorLo: lo, floorHi: hi });
+  }
+  return map;
+}
+
+/**
+ * 手动强制总结:把用户勾选的若干**根节点**(叶子/总结混层)无视阈值合并成一条上层总结。
+ * 与自动 checkResummary 的区别:不看阈值、不看层级是否齐整,直接压这一批。
+ *  - level = max(选中层级) + 1;时间范围 = 排序后首个 timeStart + 末个 timeEnd(同 checkResummary)。
+ *  - 连续性兜底:选中节点覆盖楼层需连成一段(UI 已限制,这里防御);跨层混选允许。
+ *  - 生成节点 auto=false 标手动。busy 互斥,收尾同 resummarizeNow + 隐藏/注入。
+ * 返回 { made, error }:made=1 成功,0 未生成(error 说明原因)。
+ */
+export async function summarizeSelected(nodeIds: string[]): Promise<{ made: number; error?: string }> {
+  if (!engineActiveHere()) return { made: 0, error: '插件未在当前聊天生效' };
+  if (busy) return { made: 0, error: '正忙,请稍后再试' };
+  if (nodeIds.length < 2) return { made: 0, error: '至少选择两条才能合并' };
+
+  const ctx = getContext();
+  if (!ctx) return { made: 0, error: '无 ST 上下文' };
+  const chat = ctx.chat ?? [];
+
+  const all = collectSelectableNodes(chat);
+  const picked: SelectableNode[] = [];
+  for (const id of nodeIds) {
+    const n = all.get(id);
+    if (!n) return { made: 0, error: '有选中项已失效,请刷新后重试' };
+    picked.push(n);
+  }
+  // 按覆盖楼层升序(与摘要森林时序一致);无楼层的排最后
+  const key = (n: SelectableNode) => (n.floorLo < 0 ? Number.MAX_SAFE_INTEGER : n.floorLo);
+  picked.sort((a, b) => key(a) - key(b));
+
+  // 连续性兜底:选中根覆盖的楼层区间必须连成一段(相邻根的楼层区间首尾相接,不留缺口)。
+  for (let i = 1; i < picked.length; i++) {
+    const prev = picked[i - 1];
+    const cur = picked[i];
+    if (prev.floorHi < 0 || cur.floorLo < 0 || cur.floorLo > prev.floorHi + 1) {
+      return { made: 0, error: '只能合并覆盖楼层连续的摘要' };
+    }
+  }
+
+  const sender = resolveSender('resummary');
+  if ('error' in sender) return { made: 0, error: sender.error };
+
+  const level = Math.max(...picked.map(n => n.level)) + 1;
+  const content = picked.map((n, i) => `[${i + 1}] ${n.text}`).join('\n\n');
+  const prompt = buildResummaryPrompt({ user: ctx.name1, char: ctx.name2, content, level });
+
+  busy = true;
+  engineState.running = true;
+  engineState.lastError = '';
+  try {
+    const jb = apiSettings.prompts.jailbreak.trim() || JAILBREAK_PROMPT;
+    const messages: ChatMsg[] = [];
+    if (jb) messages.push({ role: 'system', content: jb });
+    messages.push({ role: 'user', content: prompt });
+    const delta = await sendAndParse(sender.send, messages, raw => {
+      console.log('[柏宝书] 强制总结原始返回(未清洗):\n', raw);
+      const d = extractJsonObject<{ summary?: string }>(raw);
+      if (!d?.summary) {
+        const what = level === 1 ? '总结' : '二次总结';
+        throw new Error(raw.trim() ? `${what}失败:AI道歉或掉格式` : `${what}失败:AI空回`);
+      }
+      return d as { summary: string };
+    });
+
+    // 时间范围:picked 已按楼层升序 → 首个有起始的作 start,末个有结束的作 end(同 checkResummary)
+    const timeStart = picked.find(s => s.timeStart)?.timeStart;
+    const timeEnd = [...picked].reverse().find(s => s.timeEnd)?.timeEnd;
+    addSummary({
+      text: delta.summary.trim(),
+      level,
+      childIds: picked.map(s => s.id),
+      auto: false, // 手动合并
+      timeStart,
+      timeEnd,
+    });
+    engineState.lastRunAt = Date.now();
+    recomputeDerived();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    engineState.lastError = msg;
+    return { made: 0, error: msg };
+  } finally {
+    busy = false;
+    engineState.running = false;
+  }
+  await afterSummaryHideAndInject(chat);
+  return { made: 1 };
+}
+
 /**
  * 手动「立即检测并总结」:供摘要页按钮调用。
  * 与自动路径同一套阈值/连锁逻辑(checkResummary),但带 busy 互斥,

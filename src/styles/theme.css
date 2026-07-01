@@ -188,3 +188,38 @@
   /* 40% deep teal overlay */
   --bbs-shadow: 0 20px 56px -22px #32646033, 0 4px 14px -8px #3264601A;
 }
+
+/* ========== 跟随 ST ==========
+   不定义自己的配色,而是从 SillyTavern 宿主主题的 --SmartTheme* 变量派生。
+   之所以可行:自定义属性是可继承属性,能穿透 shadow 边界;且 :host{all:initial}
+   的 `all` 简写不含自定义属性,故这些 ST 变量照常继承进来(见 base.css)。
+   ST 只给了少量基色,缺的 token 用 color-mix 从基色派生;每个 var() 都带回退值,
+   万一宿主没定义(理论上不会)也不至于塌成透明。
+   注:danger/warning ST 无语义色 → 用在明/暗底都可读的中性值;overlay 用中性深色遮罩,
+   不跟随 body 色,避免暗色主题下遮罩反而变浅。 */
+.bbs-root[data-theme='st'] {
+  --bbs-bg: var(--SmartThemeBlurTintColor, #f6f5f2);
+  --bbs-surface: var(--SmartThemeChatTintColor, #ffffff);
+  /* 次级面:面色掺一点主文字色,拉开与 surface 的层次(输入框/次级块) */
+  --bbs-surface-2: color-mix(in srgb, var(--SmartThemeChatTintColor, #fff) 92%, var(--SmartThemeBodyColor, #000));
+  --bbs-ink: var(--SmartThemeBodyColor, #14213d);
+  /* 次级/弱化文字:主文字向底色退让。EmColor 常年过淡,故用 body↔bg 混合更可控 */
+  --bbs-ink-soft: color-mix(in srgb, var(--SmartThemeBodyColor, #14213d) 72%, var(--SmartThemeBlurTintColor, #f6f5f2));
+  --bbs-ink-muted: color-mix(in srgb, var(--SmartThemeBodyColor, #14213d) 52%, var(--SmartThemeBlurTintColor, #f6f5f2));
+  --bbs-accent: var(--SmartThemeQuoteColor, #718cc1);
+  --bbs-accent-soft: color-mix(in srgb, var(--SmartThemeQuoteColor, #718cc1) 14%, transparent);
+  /* 强调上的文字:借界面底色反差(适配多数 ST 配色:深强调 × 浅底) */
+  --bbs-accent-ink: var(--SmartThemeBlurTintColor, #ffffff);
+  --bbs-line: var(--SmartThemeBorderColor, #cfbcbc);
+  --bbs-line-strong: color-mix(in srgb, var(--SmartThemeBorderColor, #cfbcbc) 70%, var(--SmartThemeBodyColor, #000));
+  --bbs-danger: #d96b6b;
+  --bbs-danger-soft: #d96b6b26;
+  /* 15% opacity */
+  --bbs-warning: #d9a441;
+  --bbs-warning-soft: #d9a44126;
+  /* 15% opacity */
+  --bbs-overlay: #00000073;
+  /* 45% 中性遮罩,不随 body 色反转 */
+  --bbs-shadow: 0 18px 48px -20px var(--SmartThemeShadowColor, #00000038),
+    0 4px 12px -6px var(--SmartThemeShadowColor, #0000001a);
+}
