@@ -115,9 +115,19 @@ const isChild = computed(() => props.depth > 0);
   margin-left: 18px;
   padding-left: 14px;
   border-left: 1px solid var(--bbs-line);
+  /* 与高度撑开同步:内容整体淡入 + 轻微下滑,比单纯拉高更有「滑出来」的观感。
+     收起时反向淡出上移。过渡驱动源是父级 .is-open。 */
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity var(--bbs-dur) var(--bbs-ease), transform var(--bbs-dur) var(--bbs-ease);
+}
+.bbs-node-children.is-open .bbs-node-children-body {
+  opacity: 1;
+  transform: none;
 }
 @media (prefers-reduced-motion: reduce) {
-  .bbs-node-children {
+  .bbs-node-children,
+  .bbs-node-children-body {
     transition: none;
   }
 }

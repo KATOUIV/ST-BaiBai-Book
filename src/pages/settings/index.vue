@@ -519,10 +519,22 @@ function toggleExcluded(name: string) {
 const excludeWorldOpen = ref(false);
 const excludeWorldSearch = ref('');
 
+// 旧版 ST(如 1.13.5)的 getContext() 没有 getWorldInfoNames,退而从主页面世界书
+// 下拉框 #world_editor_select 读选项文本(value="" 是占位项,跳过)。
+function readWorldNamesFromDom(): string[] {
+  const opts = document.querySelectorAll<HTMLOptionElement>('#world_editor_select option');
+  const out: string[] = [];
+  for (const o of opts) {
+    if (o.value !== '' && o.textContent) out.push(o.textContent);
+  }
+  return out;
+}
+
 // 弹窗打开时一次性取世界书名(去重去空、按名排序);关闭后不持有。
 const worldNames = computed<string[]>(() => {
   if (!excludeWorldOpen.value) return [];
-  const names = getContext()?.getWorldInfoNames?.() ?? [];
+  const getNames = getContext()?.getWorldInfoNames;
+  const names = getNames ? getNames() : readWorldNamesFromDom();
   const seen = new Set<string>();
   for (const n of names) {
     const t = n?.trim();
