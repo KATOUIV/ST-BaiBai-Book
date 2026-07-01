@@ -2,8 +2,8 @@ import type { ChatMsg } from '@/api/client';
 import { mainApiAvailable, requestCompletion, requestViaMainApi } from '@/api/client';
 import { apiSettings, engineActiveHere, getChannelForTask } from '@/api/settings';
 import type { TaskType } from '@/api/settings';
-import type { STMessage } from '@/st/context';
-import { getContext } from '@/st/context';
+import type { STMessage, WorldInfoEntry } from '@/st/context';
+import { getContext, getCheckWorldInfo } from '@/st/context';
 import { toast } from '@/st/toast';
 import { addSummary, deriveMemory, finalizeDelta, getLeaf, itemChangesOf, leafValid, makeLeafId, pruneBrokenComps, syncItemLogFromMessage } from './apply';
 import { extractJsonObject } from './json';
@@ -65,56 +65,109 @@ function renderMessages(chat: STMessage[], indices: number[], name1: string, nam
     .join('\n\n');
 }
 
+/** 把去空后的分段去重、join。世界书激活各来源统一收口于此(与旧行为一致)。 */
+function joinWorldInfoChunks(chunks: string[]): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of chunks) {
+    const t = c?.trim();
+    if (t && !seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+  }
+  return out.join('\n\n').trim();
+}
+
 /**
- * 按本轮待摘文本激活世界书条目(关键词触发 + constant 蓝灯),返回设定文本。
- * 走 ST 的 getWorldInfoPrompt(isDryRun=true,只扫描不触发副作用事件)。
- * 关键:蓝灯/相关条目可能落在 before、after、depth(@深度)、作者注 任一位置,全部提取,
- * 否则会漏掉大量「@深度」位置的蓝灯条目(只取 before/after 会拿到空)。
- * 取不到 API / 出错 / 无激活条目 / 角色卡无世界书 → 返回空串(降级,不影响摘要正常运行)。
+ * 判断某条条目是否应被排除:① 整本排除(world 命中名单);② 条目名(comment)命中任一规则。
+ * 规则按正则编译、**大小写不敏感**(填 mvu 命中 [MVU]);普通名字天然=包含匹配。
+ * 编译失败降级为字面子串包含(大小写不敏感)——用户填了带元字符的普通名字(如「(临时)」)
+ * 也不会误伤,只是退化成子串比对。
+ */
+function isWorldInfoEntryExcluded(entry: WorldInfoEntry): boolean {
+  const world = entry.world?.trim();
+  if (world && apiSettings.excludedWorldNames.includes(world)) return true;
+  const comment = entry.comment?.trim();
+  if (!comment) return false;
+  for (const raw of apiSettings.excludedWorldInfoPatterns) {
+    const pat = raw.trim();
+    if (!pat) continue;
+    let hit = false;
+    try {
+      hit = new RegExp(pat, 'i').test(comment);
+    } catch {
+      hit = comment.toLowerCase().includes(pat.toLowerCase()); // 非法正则 → 退化为字面子串包含
+    }
+    if (hit) return true;
+  }
+  return false;
+}
+
+/**
+ * 本轮待摘文本的扫描数组(各楼正文清洗后,带人名前缀帮助关键词命中角色名)。
+ * checkWorldInfo / getWorldInfoPrompt 共用。
+ */
+function buildScanText(chat: STMessage[], targets: number[], name1: string, name2: string): string[] {
+  return targets
+    .map(i => {
+      const m = chat[i];
+      if (!m) return '';
+      const who = m.is_user ? name1 || 'User' : m.name || name2 || 'Char';
+      return `${who}: ${clampToTimeTags(m.mes)}`;
+    })
+    .filter(Boolean);
+}
+
+// ST 内部:WI 实际预算 = world_info_budget(默认25%) × maxContext,超出即截断条目(蓝灯也不例外)。
+// 摘要场景要「激活的一条都不漏」,故传一个极大的 maxContext,让预算大到不可能溢出。
+// (若用户设了 world_info_budget_cap 上限,仍会被它封顶——那是用户显式的硬上限,尊重之。)
+const HUGE_WI_CONTEXT = 1_000_000_000;
+
+/**
+ * 降级路径:走 ST 暴露的 getWorldInfoPrompt(只拿拼好的字符串,**无法按名字过滤**)。
+ * 仅当 checkWorldInfo 取不到时使用——此时排除设置不生效,但至少摘要照常带世界书,不崩。
+ * 蓝灯/相关条目可能落在 before、after、depth(@深度)、作者注 任一位置,全部提取。
+ */
+async function fetchWorldInfoViaPrompt(scanText: string[]): Promise<string> {
+  const fn = getContext()?.getWorldInfoPrompt;
+  if (typeof fn !== 'function') return '';
+  const res = await fn(scanText, HUGE_WI_CONTEXT, true);
+  if (!res) return '';
+  const chunks: string[] = [];
+  if (typeof res.worldInfoBefore === 'string') chunks.push(res.worldInfoBefore);
+  if (typeof res.worldInfoAfter === 'string') chunks.push(res.worldInfoAfter);
+  for (const d of res.worldInfoDepth ?? []) {
+    for (const e of d?.entries ?? []) if (typeof e === 'string') chunks.push(e);
+  }
+  for (const e of res.anBefore ?? []) if (typeof e === 'string') chunks.push(e);
+  for (const e of res.anAfter ?? []) if (typeof e === 'string') chunks.push(e);
+  return joinWorldInfoChunks(chunks);
+}
+
+/**
+ * 按本轮待摘文本激活世界书条目(关键词触发 + constant 蓝灯),过滤后返回设定文本。
+ * 优先走 checkWorldInfo:它返回**条目对象**(带 world/comment),据此按「整本排除」+「条目名规则」
+ * 过滤掉不需要的条目(如全局挂载的附加知识书)。激活逻辑(扫描深度/递归/预算)全在其内部,不碰。
+ * checkWorldInfo 取不到(旧版/路径变动)→ 降级到 getWorldInfoPrompt(不过滤,但摘要照常带书,不崩)。
+ * 无激活条目 / 角色卡无世界书 / 出错 → 返回空串(不影响摘要正常运行)。
  */
 async function fetchWorldInfo(chat: STMessage[], targets: number[], name1: string, name2: string): Promise<string> {
-  const ctx = getContext();
-  const fn = ctx?.getWorldInfoPrompt;
-  if (typeof fn !== 'function') return '';
+  const scanText = buildScanText(chat, targets, name1, name2);
+  if (!scanText.length) return '';
   try {
-    // 扫描文本:本轮各楼正文(清洗后)。用人名前缀帮助关键词命中角色名。
-    const scanText = targets
-      .map(i => {
-        const m = chat[i];
-        if (!m) return '';
-        const who = m.is_user ? name1 || 'User' : m.name || name2 || 'Char';
-        return `${who}: ${clampToTimeTags(m.mes)}`;
-      })
-      .filter(Boolean);
-    if (!scanText.length) return '';
-    // ST 内部:WI 实际预算 = world_info_budget(默认25%) × maxContext,超出即截断条目(蓝灯也不例外)。
-    // 摘要场景要「激活的一条都不漏」,故传一个极大的 maxContext,让预算大到不可能溢出。
-    // (若用户设了 world_info_budget_cap 上限,仍会被它封顶——那是用户显式的硬上限,尊重之。)
-    const HUGE_CONTEXT = 1_000_000_000;
-    const res = await fn(scanText, HUGE_CONTEXT, true);
-    if (!res) return '';
+    const check = await getCheckWorldInfo();
+    if (!check) return await fetchWorldInfoViaPrompt(scanText); // 降级:拿不到条目对象,无从过滤
 
-    const chunks: string[] = [];
-    if (typeof res.worldInfoBefore === 'string') chunks.push(res.worldInfoBefore);
-    if (typeof res.worldInfoAfter === 'string') chunks.push(res.worldInfoAfter);
-    // @深度条目:{depth, role, entries: string[]} —— 大量蓝灯在此
-    for (const d of res.worldInfoDepth ?? []) {
-      for (const e of d?.entries ?? []) if (typeof e === 'string') chunks.push(e);
-    }
-    for (const e of res.anBefore ?? []) if (typeof e === 'string') chunks.push(e);
-    for (const e of res.anAfter ?? []) if (typeof e === 'string') chunks.push(e);
-
-    // 去重 + 去空
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const c of chunks) {
-      const t = c.trim();
-      if (t && !seen.has(t)) {
-        seen.add(t);
-        out.push(t);
-      }
-    }
-    return out.join('\n\n').trim();
+    const res = await check(scanText, HUGE_WI_CONTEXT, true);
+    const activated = res?.allActivatedEntries;
+    if (!activated) return '';
+    // allActivatedEntries 可能是 Set<entry> 或 Map<key,entry>,统一取 values
+    const entries = activated instanceof Map ? [...activated.values()] : [...activated];
+    const chunks = entries
+      .filter(e => e && !isWorldInfoEntryExcluded(e))
+      .map(e => (typeof e.content === 'string' ? e.content : ''));
+    return joinWorldInfoChunks(chunks);
   } catch (e) {
     console.log('[柏宝书] 世界书激活失败(降级为不带设定):', e);
     return '';

@@ -132,6 +132,8 @@ export interface STContext {
     anBefore?: string[];
     anAfter?: string[];
   }>;
+  /** 全部已加载的世界书文件名(全局 + 角色绑定)。ST 稳定 API,用于「整本排除」下拉。 */
+  getWorldInfoNames?: () => string[];
   /** 主上下文最大 token(给 getWorldInfoPrompt 的预算参数) */
   maxContext?: number;
   // 兼容旧式命名
@@ -170,6 +172,49 @@ export async function getDoNewChat(): Promise<((opts?: { deleteCurrentChat?: boo
     const mod: Record<string, unknown> = await import(/* @vite-ignore */ scriptPath);
     const fn = mod.doNewChat;
     return typeof fn === 'function' ? (fn as (opts?: { deleteCurrentChat?: boolean }) => Promise<void>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 一条已激活的世界书条目(checkWorldInfo 返回的条目对象;只取过滤/拼接用到的字段)。 */
+export interface WorldInfoEntry {
+  /** 所属世界书文件名(整本排除按它匹配) */
+  world?: string;
+  /** 条目备注/标题(条目名过滤按它匹配) */
+  comment?: string;
+  /** 条目正文 */
+  content?: string;
+  [k: string]: unknown;
+}
+
+/** checkWorldInfo 的返回结构(只声明我们要用的字段)。 */
+interface CheckWorldInfoResult {
+  /** 全部激活条目(已完成扫描/递归/预算,是最终该进提示词的集合) */
+  allActivatedEntries?: Set<WorldInfoEntry> | Map<string, WorldInfoEntry>;
+  [k: string]: unknown;
+}
+
+type CheckWorldInfoFn = (
+  chat: string[],
+  maxContext: number,
+  isDryRun: boolean,
+  globalScanData?: Record<string, unknown>,
+) => Promise<CheckWorldInfoResult>;
+
+/**
+ * 取 ST 的 checkWorldInfo(getContext 未暴露,从 /scripts/world-info.js 动态取)。
+ * 与 getWorldInfoPrompt 不同:它返回**条目对象集合**(带 world/comment/content),
+ * 才能按世界书名 / 条目名过滤——而 getWorldInfoPrompt 只吐拼好的字符串,元信息全丢。
+ * 取不到(旧版/路径变动)时返回 null,调用方据此降级回 getWorldInfoPrompt(不过滤)。
+ */
+export async function getCheckWorldInfo(): Promise<CheckWorldInfoFn | null> {
+  try {
+    // 变量持有路径,避免 Vite/vue-tsc 把它当本地模块解析
+    const wiPath = '/scripts/world-info.js';
+    const mod: Record<string, unknown> = await import(/* @vite-ignore */ wiPath);
+    const fn = mod.checkWorldInfo;
+    return typeof fn === 'function' ? (fn as CheckWorldInfoFn) : null;
   } catch {
     return null;
   }

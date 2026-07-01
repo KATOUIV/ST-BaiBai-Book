@@ -152,6 +152,15 @@ export interface ApiSettings {
   keepRecent: number;
   /** 排除的角色名:这些名字(含重名卡)的聊天里,记忆系统所有功能都不生效 */
   excludedChars: string[];
+  /** 摘要/总结时**整本排除**的世界书文件名:这些书的所有激活条目都不进摘要上下文。
+   *  用于全局挂载的附加知识书等——它们对当前剧情摘要无用,排除可省 token。仅影响副API。 */
+  excludedWorldNames: string[];
+  /** 摘要/总结时按**条目名(comment)**过滤的规则:命中任一规则的条目不进摘要上下文。
+   *  每条当正则编译(普通名字天然=包含匹配),编译失败降级为字面子串包含。仅影响副API。 */
+  excludedWorldInfoPatterns: string[];
+  /** 内置默认条目名规则是否已「播种」进上面的列表(见 DEFAULT_WI_PATTERNS / hydrateSettings)。
+   *  只发放一次:老用户首次载入时补进默认规则并置 true;之后用户删空也不再补回,尊重其选择。 */
+  wiPatternsSeeded: boolean;
   /** 叶子摘要积累到 N 条时,压成一条 L1 总结(L0→L1 阈值,0=关闭) */
   leafBatchThreshold: number;
   /** L1 及以上每积累到 N 条时,压成上一层总结(L≥1→L+1 阈值,0=关闭) */
@@ -175,6 +184,10 @@ export interface ApiSettings {
 
 // extension_settings 里的命名空间键;localStorage 是旧版残留,仅用于一次性迁移。
 const SETTINGS_KEY = 'baibai_book';
+
+/** 条目名过滤的内置默认规则:首次载入时「播种」进用户列表(见 hydrateSettings),之后用户可自由增删。
+ *  \[mvu…\] = 过滤变量框架 MVU 的机制条目(对剧情摘要是纯噪音)。大小写不敏感(engine 编译带 i)。 */
+const DEFAULT_WI_PATTERNS = ['\\[mvu[\\s\\S]*?\\]'];
 const LEGACY_STORAGE_KEY = 'bbs.api.v1';
 // 旧版界面偏好(主题/导航位置/分页)曾单独存这里;现把主题+导航迁进 ui,分页仍留本机(见 state/ui.ts)。
 const LEGACY_UI_STORAGE_KEY = 'bbs.ui.v1';
@@ -230,6 +243,11 @@ function defaults(): ApiSettings {
     autoSummaryEnabled: true,
     keepRecent: 3,
     excludedChars: [],
+    excludedWorldNames: [],
+    // 空起步:内置默认规则(DEFAULT_WI_PATTERNS)由 hydrateSettings「播种」发放,只发一次。
+    // 这样老用户(已存过空数组)也能补到默认,且用户删空后不会被反复塞回。
+    excludedWorldInfoPatterns: [],
+    wiPatternsSeeded: false,
     leafBatchThreshold: 12,
     resummaryThreshold: 7,
     recentResolvedPlansCount: 5,
@@ -273,6 +291,15 @@ function normalize(raw: unknown): ApiSettings {
   merged.excludedChars = Array.isArray(merged.excludedChars)
     ? merged.excludedChars.filter((x): x is string => typeof x === 'string')
     : [];
+  // 排除世界书/条目名规则:字符串数组,去空,旧数据缺失/非法回退空数组
+  merged.excludedWorldNames = Array.isArray(merged.excludedWorldNames)
+    ? merged.excludedWorldNames.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    : [];
+  merged.excludedWorldInfoPatterns = Array.isArray(merged.excludedWorldInfoPatterns)
+    ? merged.excludedWorldInfoPatterns.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    : [];
+  // 播种标记:布尔,缺失(老数据无此键)回退 false,让 hydrateSettings 首次补发默认规则
+  merged.wiPatternsSeeded = typeof merged.wiPatternsSeeded === 'boolean' ? merged.wiPatternsSeeded : false;
   // vector 同为嵌套对象(且内含子对象),逐层兜底,老数据缺字段时回退默认。
   // 注:旧结构曾有 vector.channels + {channel,model};扁平化后弃用,逐角色按 url/key/model 兜底,
   // 老数据缺这些字段会回退空串(等于「未配置」,用户重填一次即可)。
@@ -395,6 +422,9 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.autoSummaryEnabled = src.autoSummaryEnabled;
   target.keepRecent = src.keepRecent;
   target.excludedChars = src.excludedChars;
+  target.excludedWorldNames = src.excludedWorldNames;
+  target.excludedWorldInfoPatterns = src.excludedWorldInfoPatterns;
+  target.wiPatternsSeeded = src.wiPatternsSeeded;
   target.leafBatchThreshold = src.leafBatchThreshold;
   target.resummaryThreshold = src.resummaryThreshold;
   target.recentResolvedPlansCount = src.recentResolvedPlansCount;
@@ -457,6 +487,17 @@ export function hydrateSettings(): void {
     } catch {
       /* ignore */
     }
+  }
+
+  // 播种内置默认条目名规则:仅当从未发放过(老用户/新用户首次)才补进列表,并置标记 + 落盘。
+  // 只发一次——用户之后删空也不会被反复塞回。追加而非覆盖,不动用户已有的自定义规则。
+  if (!apiSettings.wiPatternsSeeded) {
+    for (const pat of DEFAULT_WI_PATTERNS) {
+      if (!apiSettings.excludedWorldInfoPatterns.includes(pat)) apiSettings.excludedWorldInfoPatterns.push(pat);
+    }
+    apiSettings.wiPatternsSeeded = true;
+    ctx.extensionSettings[SETTINGS_KEY] = JSON.parse(JSON.stringify(apiSettings));
+    ctx.saveSettingsDebounced?.();
   }
 
   ready = true;

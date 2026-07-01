@@ -514,6 +514,63 @@ function toggleExcluded(name: string) {
   else list.push(name);
 }
 
+/* —— 排除世界书:摘要/总结时不带这些整本世界书的条目。复刻排除角色的搜索+勾选弹窗;
+   世界书名从 ST 的 getWorldInfoNames()(全部已加载的世界书文件)取。 —— */
+const excludeWorldOpen = ref(false);
+const excludeWorldSearch = ref('');
+
+// 弹窗打开时一次性取世界书名(去重去空、按名排序);关闭后不持有。
+const worldNames = computed<string[]>(() => {
+  if (!excludeWorldOpen.value) return [];
+  const names = getContext()?.getWorldInfoNames?.() ?? [];
+  const seen = new Set<string>();
+  for (const n of names) {
+    const t = n?.trim();
+    if (t) seen.add(t);
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b, 'zh'));
+});
+
+const filteredWorldNames = computed<string[]>(() => {
+  const q = excludeWorldSearch.value.trim().toLowerCase();
+  if (!q) return worldNames.value;
+  return worldNames.value.filter(n => n.toLowerCase().includes(q));
+});
+
+function openExcludeWorld() {
+  excludeWorldSearch.value = '';
+  excludeWorldOpen.value = true;
+}
+function closeExcludeWorld() {
+  excludeWorldOpen.value = false;
+}
+function isWorldExcluded(name: string): boolean {
+  return apiSettings.excludedWorldNames.includes(name);
+}
+function toggleWorldExcluded(name: string) {
+  const list = apiSettings.excludedWorldNames;
+  const idx = list.indexOf(name);
+  if (idx >= 0) list.splice(idx, 1);
+  else list.push(name);
+}
+
+/* —— 排除世界书条目:按条目名(comment)过滤,复刻清洗标签的输入框+chips。
+   规则当正则,普通名字即包含匹配;编译失败降级子串。 —— */
+const wiPatternDraft = ref('');
+function addWiPattern() {
+  const pat = wiPatternDraft.value.trim();
+  if (!pat) {
+    wiPatternDraft.value = '';
+    return;
+  }
+  if (!apiSettings.excludedWorldInfoPatterns.includes(pat)) apiSettings.excludedWorldInfoPatterns.push(pat);
+  wiPatternDraft.value = '';
+}
+function removeWiPattern(pat: string) {
+  const idx = apiSettings.excludedWorldInfoPatterns.indexOf(pat);
+  if (idx >= 0) apiSettings.excludedWorldInfoPatterns.splice(idx, 1);
+}
+
 /* —— 自定义清洗标签:用户填标签名(如 snow),清洗正文时把 <snow>…</snow> 整块删掉 —— */
 const stripTagDraft = ref('');
 function addStripTag() {
@@ -859,6 +916,64 @@ function scorePct(score: number): number {
           </li>
         </ul>
         <p v-else class="bbs-field-hint">名单为空,所有角色都启用记忆系统。</p>
+      </Collapsible>
+
+      <!-- 排除世界书内容 -->
+      <Collapsible title="排除世界书内容" :open="false">
+        <p class="bbs-field-hint">
+          摘要 / 总结时会激活世界书当参考。这里可剔除对剧情记忆无用的条目——如全局挂载的附加知识书、
+          规则说明等,既省 token 也避免干扰。仅影响摘要副 API,不改变你主对话里的世界书。
+        </p>
+
+        <!-- 整本排除:复刻排除角色的搜索+勾选弹窗 -->
+        <div class="bbs-channel-bar">
+          <span class="bbs-field-label">整本排除 · 已选 {{ apiSettings.excludedWorldNames.length }} 本</span>
+          <button class="bbs-btn bbs-btn-primary bbs-btn-sm" type="button" @click="openExcludeWorld">
+            <Icon name="edit" /> 编辑名单
+          </button>
+        </div>
+        <ul v-if="apiSettings.excludedWorldNames.length" class="bbs-exclude-chips">
+          <li v-for="name in apiSettings.excludedWorldNames" :key="name" class="bbs-exclude-chip">
+            <span class="bbs-exclude-chip-name">{{ name }}</span>
+            <button class="bbs-exclude-chip-x" type="button" title="移出名单" @click="toggleWorldExcluded(name)">
+              <Icon name="close" />
+            </button>
+          </li>
+        </ul>
+        <p v-else class="bbs-field-hint">未排除任何世界书,全部激活条目都会进摘要参考。</p>
+
+        <hr class="bbs-rule" />
+
+        <!-- 按条目名过滤:复刻清洗标签的输入框 + chips -->
+        <div class="bbs-field-head">
+          <span class="bbs-field-label">按条目名过滤</span>
+        </div>
+        <p class="bbs-field-hint">
+          填条目备注名(comment)即按<strong>包含</strong>匹配(不分大小写)——如填 <code>附加</code> 可命中「附加设定」。
+          也支持正则:<code>^规则</code> 表示以「规则」开头。对上面未整本排除的世界书生效。
+          默认预置一条 <code>\[mvu[\s\S]*?\]</code>,过滤变量框架 MVU 的机制条目;不需要可直接删。
+        </p>
+        <div class="bbs-striptag-bar">
+          <input
+            v-model="wiPatternDraft"
+            class="bbs-input"
+            type="text"
+            placeholder="条目名或正则,如 附加 或 ^规则"
+            @keydown.enter.prevent="addWiPattern"
+          />
+          <button class="bbs-btn bbs-btn-primary bbs-btn-sm" type="button" @click="addWiPattern">
+            <Icon name="plus" /> 添加
+          </button>
+        </div>
+        <ul v-if="apiSettings.excludedWorldInfoPatterns.length" class="bbs-exclude-chips">
+          <li v-for="pat in apiSettings.excludedWorldInfoPatterns" :key="pat" class="bbs-exclude-chip">
+            <span class="bbs-exclude-chip-name">{{ pat }}</span>
+            <button class="bbs-exclude-chip-x" type="button" title="移除" @click="removeWiPattern(pat)">
+              <Icon name="close" />
+            </button>
+          </li>
+        </ul>
+        <p v-else class="bbs-field-hint">暂无条目名规则。</p>
       </Collapsible>
 
       <!-- 自定义清洗标签 -->
@@ -1511,6 +1626,44 @@ function scorePct(score: number): number {
       </div>
     </ModalMask>
 
+    <!-- ===== 排除世界书弹窗:搜索 + 勾选列表(复刻排除角色) ===== -->
+    <ModalMask :open="excludeWorldOpen" @close="closeExcludeWorld">
+      <div class="bbs-modal" role="dialog" aria-modal="true" aria-label="编辑排除世界书名单">
+        <header class="bbs-modal-head">
+          <span class="bbs-modal-title">整本排除世界书</span>
+          <button class="bbs-icon-mini" type="button" title="关闭" @click="closeExcludeWorld"><Icon name="close" /></button>
+        </header>
+
+        <input
+          v-model="excludeWorldSearch"
+          class="bbs-input"
+          type="search"
+          placeholder="搜索世界书名…"
+          spellcheck="false"
+        />
+
+        <div class="bbs-exclude-list">
+          <label v-for="name in filteredWorldNames" :key="name" class="bbs-exclude-row">
+            <input
+              type="checkbox"
+              class="bbs-checkbox"
+              :checked="isWorldExcluded(name)"
+              @change="toggleWorldExcluded(name)"
+            />
+            <span class="bbs-exclude-row-name">{{ name }}</span>
+          </label>
+          <p v-if="!worldNames.length" class="bbs-field-hint">未读取到世界书。请先在 ST 里加载 / 挂载世界书。</p>
+          <p v-else-if="!filteredWorldNames.length" class="bbs-field-hint">没有匹配「{{ excludeWorldSearch }}」的世界书。</p>
+        </div>
+
+        <footer class="bbs-modal-foot">
+          <span class="bbs-exclude-count">共 {{ worldNames.length }} 本 · 已排除 {{ apiSettings.excludedWorldNames.length }}</span>
+          <span class="bbs-modal-foot-spacer"></span>
+          <button class="bbs-btn bbs-btn-primary" type="button" @click="closeExcludeWorld">完成</button>
+        </footer>
+      </div>
+    </ModalMask>
+
     <!-- ===== 更新确认弹窗 ===== -->
     <ConfirmDialog
       v-model:open="updateConfirmOpen"
@@ -1966,6 +2119,8 @@ function scorePct(score: number): number {
   margin-top: 0;
 }
 .bbs-checkbox {
+  /* flex 行里长文本会把固定宽高的复选框挤扁 → 禁止收缩,保持标准方形 */
+  flex: 0 0 auto;
   width: 18px;
   height: 18px;
   accent-color: var(--bbs-accent);
