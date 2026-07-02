@@ -29,12 +29,15 @@ export interface LeafView {
   active: boolean; // 所在消息已隐藏(is_system)
   stale: boolean; // 正文已变、尚未重摘
 }
-export const derivedMeta = reactive<{ hasLeaf: boolean; leaves: LeafView[]; pendingFloors: number[]; latestStoryTime: string }>({
+export const derivedMeta = reactive<{ hasLeaf: boolean; leaves: LeafView[]; pendingFloors: number[]; latestStoryTime: string; rev: number }>({
   hasLeaf: false,
   leaves: [],
   pendingFloors: [],
   // 故事内最新时间:从正文标签实时读(不依赖是否已摘),供摘要页展示与相对时间参照
   latestStoryTime: '',
+  // 递增版本号:每次 recomputeDerived 都 +1。chat 非 reactive,楼内面板等外部视图读它即可
+  // 追踪「派生已重算」——无论重算由 ST 事件、主界面摘要、还是楼内编辑触发,都能统一刷新。
+  rev: 0,
 });
 
 /** 重放 chat 得到 state/items/plans,原地写回;并刷新 derivedMeta */
@@ -58,6 +61,7 @@ export function recomputeDerived(): void {
   if (chat) {
     for (let i = 0; i < chat.length; i++) {
       const m = chat[i];
+      if (m?.extra?.bbs_omit) continue; // 番外楼:不进摘要页叶子列表
       const leaf = getLeaf(m);
       if (!leaf) continue;
       const valid = leafValid(m);
@@ -79,6 +83,7 @@ export function recomputeDerived(): void {
   derivedMeta.latestStoryTime = latestStoryTime(chat);
   // 待摘要楼层(AI 楼且无有效叶子),供摘要页「未摘要楼层」列表逐楼补摘
   derivedMeta.pendingFloors = chat ? pendingAiFloors(chat) : [];
+  derivedMeta.rev++; // 通知外部视图(楼内面板)派生已刷新
 }
 
 /* ============ 落盘:叶子在 chat 文件,森林在 metadata ============ */

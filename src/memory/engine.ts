@@ -227,6 +227,18 @@ function fetchUserPersona(): string {
  * 据此:非用户、有正文、且不是「带 type 的原生系统楼」即为 AI 楼。普通可见回复 is_system=false 自然命中。
  */
 export function isAiFloor(m: STMessage | undefined): boolean {
+  // 番外楼(bbs_omit):对引擎彻底不存在——不摘、不总结、不重放、不注入、不隐藏计数。
+  // 放在最前面短路,凌驾于所有其它判定(含 bbs_hidden)。
+  if (m?.extra?.bbs_omit) return false;
+  return isRealAiReply(m);
+}
+
+/**
+ * 是否「真实的 AI 回复楼」——只看消息本身的物理性质,**不看番外标记**。
+ * 与 isAiFloor 的区别:番外楼仍是真实 AI 回复(isRealAiReply=true),只是被引擎排除(isAiFloor=false)。
+ * 楼内锚点要挂在所有真实 AI 回复上(含已标番外者,否则无从取消番外),故用它而非 isAiFloor。
+ */
+export function isRealAiReply(m: STMessage | undefined): boolean {
   if (!m || m.is_user) return false;
   if (typeof m.mes !== 'string' || !m.mes.trim()) return false;
   if (m.extra?.bbs_hidden) return true; // 被我们隐藏的旧 AI 楼
@@ -419,6 +431,41 @@ export async function summarizeFloor(floor: number): Promise<void> {
   if (!isAiFloor(chat[floor]) || leafValid(chat[floor])) return;
   await runSummary(floor);
   await afterSummaryHideAndInject(chat);
+}
+
+/**
+ * 标记 / 取消标记某楼为「番外」(小剧场/番外篇,与主线剧情无关)。
+ * 番外楼对引擎**彻底不存在**:不摘、不总结、不重放派生、不注入——由 isAiFloor 等处的 bbs_omit 守卫实现。
+ *
+ * 非破坏性:只切 extra.bbs_omit 标记,**不删该楼已有的叶子**。故可逆——取消番外即刻恢复其摘要,
+ * 无需重新调 AI。叶子/森林数据都原样保留,守卫只是在遍历时跳过它。
+ *
+ * ⚠️ 边界:若该楼的叶子**已被压进上层总结节点**(L1+),其叙事文字已融入 AI 写的总结散文里,
+ * 无法无损抠除——那段总结文本仍含此楼,直到重新总结。绝大多数场景(小剧场刚写完就标番外、
+ * 尚未压缩)不受影响,完全排除。
+ *
+ * @param on true=标为番外,false=取消番外
+ */
+export async function setFloorOmit(floor: number, on: boolean): Promise<void> {
+  const ctx = getContext();
+  if (!ctx) return;
+  const chat = ctx.chat ?? [];
+  const m = chat[floor];
+  if (!m) return;
+  const already = !!m.extra?.bbs_omit;
+  if (already === on) return; // 幂等
+
+  if (on) {
+    m.extra = { ...(m.extra ?? {}), bbs_omit: true };
+  } else {
+    const { bbs_omit: _omit, ...rest } = m.extra ?? {};
+    m.extra = rest;
+  }
+
+  // 标记随 chat 文件持久化;派生/注入/隐藏窗口按新口径重算。
+  recomputeDerived();
+  await syncHiddenNow(); // 内部据 engineActiveHere/autoSummary 决定是否同步隐藏,并刷新注入
+  scheduleLeafFlush();
 }
 
 /**
@@ -651,6 +698,7 @@ function floorTargets(chat: STMessage[], aiFloor: number, covered: Set<number>):
   const targets: number[] = [aiFloor];
   for (let i = aiFloor - 1; i >= 0; i--) {
     if (covered.has(i)) break;
+    if (chat[i]?.extra?.bbs_omit) continue; // 番外楼:不把它正文并进摘要上下文(但不作屏障)
     if (isAiFloor(chat[i])) break; // 碰到上一个 AI 楼层就停
     if (chat[i]) targets.unshift(i);
   }
@@ -1073,6 +1121,7 @@ function rootsAtLevel(level: number, chat: STMessage[]): RootView[] {
   if (level === 0) {
     const out: RootView[] = [];
     for (let i = 0; i < chat.length; i++) {
+      if (chat[i]?.extra?.bbs_omit) continue; // 番外楼:不进森林压缩
       if (!leafValid(chat[i])) continue;
       const lf = getLeaf(chat[i]) as LeafExtra;
       if (collected.has(lf.id)) continue; // 已被某 L1 收纳
@@ -1186,6 +1235,7 @@ function collectSelectableNodes(chat: STMessage[]): Map<string, SelectableNode> 
   // 叶子:id → 楼层
   const leafFloor = new Map<string, number>();
   for (let i = 0; i < chat.length; i++) {
+    if (chat[i]?.extra?.bbs_omit) continue; // 番外楼:不作为可选节点
     if (!leafValid(chat[i])) continue;
     const lf = getLeaf(chat[i]) as LeafExtra;
     leafFloor.set(lf.id, i);

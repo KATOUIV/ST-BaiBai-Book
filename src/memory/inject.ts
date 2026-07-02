@@ -87,6 +87,7 @@ function buildView(
 
   if (chat) {
     for (let i = 0; i < chat.length; i++) {
+      if (chat[i]?.extra?.bbs_omit) continue; // 番外楼:不进注入视图
       if (!leafValid(chat[i])) continue; // 陈旧叶子不进视图 → 不注入
       const leaf = getLeaf(chat[i]) as LeafExtra;
       byId.set(leaf.id, {

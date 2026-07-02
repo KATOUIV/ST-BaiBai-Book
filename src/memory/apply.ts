@@ -110,6 +110,25 @@ export function leafIntact(m: STMessage | undefined): boolean {
   return !!(leaf && leaf.id && leaf.delta);
 }
 
+/**
+ * 把一个稳定 plan id(plan:${leafId}#${addIdx})反查成计划内容文本。
+ * resolve/reopen/remove 只存 id、不存文本;楼内面板要显示「了结:找到妹妹」需据此回查产生它的叶子。
+ * 找不到(叶子已删/id 非法)返回空串,调用方自行降级。
+ */
+export function planContentById(planIdStr: string): string {
+  const m = planIdStr.match(/^plan:(.+)#(\d+)$/);
+  if (!m) return '';
+  const leafId = m[1];
+  const addIdx = Number(m[2]);
+  const chat = getContext()?.chat;
+  if (!chat) return '';
+  for (let i = 0; i < chat.length; i++) {
+    const lf = getLeaf(chat[i]);
+    if (lf?.id === leafId) return lf.delta?.plans?.add?.[addIdx]?.content?.trim() ?? '';
+  }
+  return '';
+}
+
 /** 叶子记录的页码(缺省按第一页 0);消息当前页码同口径(swipe_id 缺省 0)。 */
 function leafSwipe(leaf: LeafExtra): number {
   return typeof leaf.swipe === 'number' ? leaf.swipe : 0;
@@ -488,6 +507,7 @@ export function deriveMemory(
   if (!chat) return { state: mem.state, items: mem.items, plans: mem.plans, scenes: mem.scenes, npcs: mem.npcs, itemLog: mem.itemLog };
   const end = typeof upToExclusive === 'number' ? Math.min(upToExclusive, chat.length) : chat.length;
   for (let i = 0; i < end; i++) {
+    if (chat[i]?.extra?.bbs_omit) continue; // 番外楼:不参与派生重放
     if (!leafValid(chat[i])) continue;
     const leaf = getLeaf(chat[i])!;
     // 日志用「故事内时间」:结束时间优先(本段最后时刻),缺则起始,再缺旧 timeLabel,最后空串
@@ -1056,6 +1076,37 @@ export function editLeafAt(index: number, text: string, timeStart: string, timeE
   if (e) leaf.delta.time = e;
   else if (s) leaf.delta.time = s;
   else delete leaf.delta.time;
+  chat[index].extra = { ...(chat[index].extra ?? {}), bbs_leaf: leaf };
+  recomputeDerived();
+  scheduleLeafFlush();
+  return true;
+}
+
+/**
+ * 楼内面板专用:整体编辑某楼叶子(摘要正文 + 起止时间 + 结构化 delta)。
+ * 与 editLeafAt 的区别:连 delta 一起替换,一次重放。供楼内面板「改关键字段 / 删条目」用。
+ * delta 由调用方在克隆上改好后整体传入(只改现有条目值 / 删条目,不涉及跨桶抵消逻辑,故直接替换即可)。
+ * 时间处理与 editLeafAt 一致:timeEnd(缺则 timeStart)覆盖写进 delta.time;两端皆空则清除。
+ */
+export function editLeafFull(
+  index: number,
+  patch: { text: string; timeStart: string; timeEnd: string; delta: StoredDelta },
+): boolean {
+  const chat = getContext()?.chat;
+  const leaf = getLeaf(chat?.[index]);
+  if (!chat || !leaf) return false;
+  leaf.text = patch.text.trim();
+  const s = patch.timeStart.trim();
+  const e = patch.timeEnd.trim();
+  leaf.timeStart = s || undefined;
+  leaf.timeEnd = e || undefined;
+  leaf.timeLabel = undefined; // 起止已是权威,旧合并串作废
+  const delta: StoredDelta = { ...patch.delta };
+  // 覆盖型当前时间取结束时间;两端皆空才清除(与 editLeafAt 同口径)
+  if (e) delta.time = e;
+  else if (s) delta.time = s;
+  else delete delta.time;
+  leaf.delta = delta;
   chat[index].extra = { ...(chat[index].extra ?? {}), bbs_leaf: leaf };
   recomputeDerived();
   scheduleLeafFlush();

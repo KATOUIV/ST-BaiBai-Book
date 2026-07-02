@@ -9,6 +9,7 @@ import App from '@/App.vue';
 import { injectMenuButton } from '@/menu';
 import { syncTopBarButton } from '@/topbar';
 import { syncQuickReplyButton } from '@/quickReply';
+import { bindFloorPanel } from '@/floorPanel';
 import { ui } from '@/state/ui';
 import { watch } from 'vue';
 // 这两行让 Vite 把全局样式打进 dist/index.css(随后注入 shadow root)
@@ -131,6 +132,8 @@ function bindMemoryWhenReady(attempt = 0) {
       syncTimeTagRegex();
       // 首屏:把当前聊天已有的记忆挂上注入
       refreshInjection();
+      // 楼内摘要锚点:按设置开关注入(bindFloorPanel 内 watch 开关 + 主题,immediate 首次同步)
+      bindFloorPanel();
       // 后台检测更新(实时比对本地/远端 manifest 版本;失败静默,不阻断启动)
       void checkForUpdate();
       console.log('[柏宝书] 启动链绑定完成');
