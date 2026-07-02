@@ -751,10 +751,10 @@ function scorePct(score: number): number {
         <p class="bbs-field-hint">在输入框上方(与快速回复同位)加一个「柏宝书」按钮,跟随酒馆主题美化。</p>
 
         <label class="bbs-switch-row">
-          <span class="bbs-field-label">楼层内显示摘要锚点</span>
+          <span class="bbs-field-label">启用楼层界面</span>
           <input v-model="ui.showFloorPanel" type="checkbox" class="bbs-checkbox" />
         </label>
-        <p class="bbs-field-hint">在每条 AI 楼层下方加一条摘要锚点:查看该楼摘要与数据变动,并可一键标记「番外」。标为番外的楼层被记忆系统彻底忽略(不摘要、不总结、不注入),适合小剧场/番外篇;取消番外即恢复。</p>
+        <p class="bbs-field-hint">在每条 AI 楼层下方加一个界面:查看该楼摘要与数据变动,并可一键标记「番外」。标为番外的楼层被记忆系统彻底忽略(不摘要、不总结、不注入),适合小剧场/番外篇;取消番外即恢复。</p>
 
         <!-- 屏幕悬浮球:配置项多,收进可收缩小分组 -->
         <Collapsible title="屏幕悬浮球" :open="false">
