@@ -21,7 +21,7 @@ import { resolveKeepStart } from './engine';
 import { refreshInjection, renderHistoryNodes, selectHistoryNodesBefore } from './inject';
 import { latestStoryTime } from './timeTag';
 import { memory, recomputeDerived, saveMemory, flushLeavesNow } from './store';
-import type { LeafExtra, MemSummary, StoredDelta } from './types';
+import type { JsonValue, LeafExtra, MemSummary, StoredDelta } from './types';
 import { isBaiBaoKuAvailable, vecBundleCreate } from '@/api/baibaoku';
 import { appendBundleHash, BUNDLES_META_KEY, currentBundleHashes, currentVectorDb } from './vector/scope';
 
@@ -37,6 +37,50 @@ export interface CarryoverPlan {
   recapLen: number;
   /** 当前是否有可携带数据 */
   hasData: boolean;
+}
+
+function cloneJsonRecord(value: Record<string, JsonValue>): Record<string, JsonValue> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, JsonValue>;
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const v = (value as Record<string, unknown>)[key];
+      if (v !== undefined) out[key] = sortJson(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(sortJson(a)) === JSON.stringify(sortJson(b));
+}
+
+function deltaHasData(delta: StoredDelta): boolean {
+  return !!(
+    delta.time ||
+    delta.location ||
+    delta.locationPath?.length ||
+    delta.items?.add?.length ||
+    delta.items?.update?.length ||
+    delta.items?.remove?.length ||
+    delta.scenes?.add?.length ||
+    delta.scenes?.update?.length ||
+    delta.scenes?.reparent?.length ||
+    delta.scenes?.remove?.length ||
+    delta.npcs?.add?.length ||
+    delta.npcs?.update?.length ||
+    delta.npcs?.remove?.length ||
+    delta.plans?.add?.length ||
+    delta.plans?.resolve?.length ||
+    delta.plans?.remove?.length ||
+    delta.plans?.reopen?.length ||
+    delta.varOps?.length
+  );
 }
 
 /** 把「截止窗口起点的派生状态」编码成全量 add 的 StoredDelta(种子叶子的 delta)。 */
@@ -57,6 +101,16 @@ function encodeStateAsDelta(state: ReturnType<typeof deriveMemory>): StoredDelta
         carried: i.carried,
         location: i.location,
       })),
+    };
+  }
+  if (state.scenes.length) {
+    delta.scenes = {
+      add: [...state.scenes]
+        .sort((a, b) => a.path.length - b.path.length || a.createdAt - b.createdAt || a.name.localeCompare(b.name))
+        .map(s => ({
+          path: [...s.path],
+          desc: s.desc,
+        })),
     };
   }
   if (state.npcs.length) {
@@ -84,6 +138,10 @@ function encodeStateAsDelta(state: ReturnType<typeof deriveMemory>): StoredDelta
         targetTime: p.targetTime,
       })),
     };
+  }
+  const initialVars = deriveMemory(null).vars;
+  if (!sameJson(state.vars, initialVars)) {
+    delta.varOps = [{ op: 'set', path: '', value: cloneJsonRecord(state.vars) }];
   }
   return delta;
 }
@@ -117,12 +175,13 @@ export function computeCarryoverPlan(): CarryoverPlan {
   }
 
   const recap = renderHistoryNodes(selectHistoryNodesBefore(memory.summaries, chat, carryStart));
+  const seedDelta = encodeStateAsDelta(deriveMemory(chat, carryStart));
   return {
     carryStart,
     carryCount,
     aiCount,
     recapLen: recap.length,
-    hasData: chat.length > 0 && (carryCount > 0 || recap.length > 0 || memory.items.length > 0 || memory.npcs.length > 0 || memory.plans.length > 0),
+    hasData: chat.length > 0 && (carryCount > 0 || recap.length > 0 || deltaHasData(seedDelta)),
   };
 }
 
@@ -176,7 +235,7 @@ export async function createNewChatWithCarryover(): Promise<boolean> {
     carryMessages.push(sanitizeCarryMessage(m));
   }
 
-  if (!mergedSummary && !carryMessages.length && !seedDelta.items && !seedDelta.npcs && !seedDelta.plans) {
+  if (!mergedSummary && !carryMessages.length && !deltaHasData(seedDelta)) {
     toast('当前对话没有可携带的数据', 'warning');
     return false;
   }
