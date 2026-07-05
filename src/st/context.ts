@@ -239,3 +239,27 @@ export async function getCheckWorldInfo(): Promise<CheckWorldInfoFn | null> {
     return null;
   }
 }
+
+/**
+ * ST-Prompt-Template(提示词模板插件)挂在 globalThis 的执行器接口(见其 exports.ts)。
+ * 我们只用到 prepareContext + evalTemplate:前者备好含变量/世界书上下文的 env,
+ * 后者对含 <% %> 的文本跑 EJS。用于让副 API 读到的世界书拿到「执行后」的成品,而非原文。
+ * 只声明用到的两个方法;插件未安装时 globalThis.EjsTemplate 为 undefined,调用方据此降级。
+ */
+export interface EjsTemplateApi {
+  prepareContext: (context?: Record<string, unknown>, end?: number) => Promise<Record<string, unknown>>;
+  evalTemplate: (
+    code: string,
+    context?: Record<string, unknown> | null,
+    options?: Record<string, unknown>,
+  ) => Promise<string | null>;
+}
+
+/** 取 ST-Prompt-Template 暴露的模板执行器;未安装/接口不完整时返回 null(调用方降级为不执行 EJS)。 */
+export function getEjsTemplate(): EjsTemplateApi | null {
+  const api = (globalThis as { EjsTemplate?: Partial<EjsTemplateApi> }).EjsTemplate;
+  if (api && typeof api.prepareContext === 'function' && typeof api.evalTemplate === 'function') {
+    return api as EjsTemplateApi;
+  }
+  return null;
+}

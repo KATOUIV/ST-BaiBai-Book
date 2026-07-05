@@ -168,6 +168,10 @@ export interface ApiSettings {
   /** 内置默认条目名规则是否已「播种」进上面的列表(见 DEFAULT_WI_PATTERNS / hydrateSettings)。
    *  只发放一次:老用户首次载入时补进默认规则并置 true;之后用户删空也不再补回,尊重其选择。 */
   wiPatternsSeeded: boolean;
+  /** 渲染世界书模板(默认开):摘要副 API 取世界书条目前,先展开 {{宏}} 并执行 ST-Prompt-Template 的
+   *  EJS(<% %>),让「按好感度切换人设」等动态条目拿到成品而非原文。副作用:含写变量的 EJS 每次摘要
+   *  都会额外执行一次,污染变量状态——遇到这类世界书可关掉。未装 ST-Prompt-Template 时仅展开宏。 */
+  renderWorldInfoTemplates: boolean;
   /** 叶子摘要积累到 N 条时,压成一条 L1 总结(L0→L1 阈值,0=关闭) */
   leafBatchThreshold: number;
   /** L1 及以上每积累到 N 条时,压成上一层总结(L≥1→L+1 阈值,0=关闭) */
@@ -260,6 +264,7 @@ function defaults(): ApiSettings {
     // 这样老用户(已存过空数组)也能补到默认,且用户删空后不会被反复塞回。
     excludedWorldInfoPatterns: [],
     wiPatternsSeeded: false,
+    renderWorldInfoTemplates: true,
     leafBatchThreshold: 12,
     resummaryThreshold: 7,
     recentResolvedPlansCount: 5,
@@ -315,6 +320,9 @@ function normalize(raw: unknown): ApiSettings {
     : [];
   // 播种标记:布尔,缺失(老数据无此键)回退 false,让 hydrateSettings 首次补发默认规则
   merged.wiPatternsSeeded = typeof merged.wiPatternsSeeded === 'boolean' ? merged.wiPatternsSeeded : false;
+  // 渲染世界书模板:布尔,缺失(老数据无此键)回退 true(默认开,让动态世界书条目拿到成品)
+  merged.renderWorldInfoTemplates =
+    typeof merged.renderWorldInfoTemplates === 'boolean' ? merged.renderWorldInfoTemplates : true;
   // vector 同为嵌套对象(且内含子对象),逐层兜底,老数据缺字段时回退默认。
   // 注:旧结构曾有 vector.channels + {channel,model};扁平化后弃用,逐角色按 url/key/model 兜底,
   // 老数据缺这些字段会回退空串(等于「未配置」,用户重填一次即可)。
@@ -464,6 +472,7 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.excludedWorldNames = src.excludedWorldNames;
   target.excludedWorldInfoPatterns = src.excludedWorldInfoPatterns;
   target.wiPatternsSeeded = src.wiPatternsSeeded;
+  target.renderWorldInfoTemplates = src.renderWorldInfoTemplates;
   target.leafBatchThreshold = src.leafBatchThreshold;
   target.resummaryThreshold = src.resummaryThreshold;
   target.recentResolvedPlansCount = src.recentResolvedPlansCount;

@@ -943,6 +943,23 @@ function scorePct(score: number): number {
           规则说明等,既省 token 也避免干扰。仅影响摘要副 API,不改变你主对话里的世界书。
         </p>
 
+        <!-- 渲染世界书模板:配合「提示词模板(ST-Prompt-Template)」等插件 -->
+        <label class="bbs-switch-row">
+          <span class="bbs-field-label">渲染世界书模板</span>
+          <input v-model="apiSettings.renderWorldInfoTemplates" type="checkbox" class="bbs-checkbox" />
+        </label>
+        <p class="bbs-field-hint">
+          开启后,读取世界书条目前会先展开 <code v-pre>{{宏}}</code>(酒馆助手等)并执行
+          <strong>提示词模板</strong>插件的 EJS(<code>&lt;% %&gt;</code>),让「按好感度切换人设」这类
+          动态条目拿到<strong>执行后的成品</strong>而非原文。
+          未安装提示词模板插件时仅展开宏。
+          <br />
+          ⚠️ 若某世界书条目的 EJS 里含<strong>写变量</strong>操作(如 <code>setvar</code>),每次摘要都会额外执行一次、
+          可能污染变量,遇到这种情况可关掉本项。
+        </p>
+
+        <hr class="bbs-rule" />
+
         <!-- 整本排除:复刻排除角色的搜索+勾选弹窗 -->
         <div class="bbs-channel-bar">
           <span class="bbs-field-label">整本排除 · 已选 {{ apiSettings.excludedWorldNames.length }} 本</span>

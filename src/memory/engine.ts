@@ -3,7 +3,7 @@ import { mainApiAvailable, requestCompletion, requestViaMainApi } from '@/api/cl
 import { apiSettings, engineActiveHere, getChannelForTask } from '@/api/settings';
 import type { TaskType } from '@/api/settings';
 import type { STMessage, WorldInfoEntry } from '@/st/context';
-import { getContext, getCheckWorldInfo, setMessageText } from '@/st/context';
+import { getContext, getCheckWorldInfo, getEjsTemplate, setMessageText } from '@/st/context';
 import { toast } from '@/st/toast';
 import { addSummary, deriveMemory, finalizeDelta, fmtVarOpsInline, getLeaf, itemChangesOf, leafValid, makeLeafId, pruneBrokenComps, syncItemLogFromMessage } from './apply';
 import { extractJsonObject } from './json';
@@ -125,6 +125,36 @@ function buildScanText(chat: STMessage[], targets: number[], name1: string, name
 const HUGE_WI_CONTEXT = 1_000_000_000;
 
 /**
+ * 渲染世界书条目内容,让副 API 拿到「执行后」的成品而非原文:
+ *   ① substituteParams 展开 {{宏}}(含 JS-Slash-Runner 经 MacrosParser 注册的自定义宏);
+ *   ② 若装了 ST-Prompt-Template(提示词模板)且文本含 <% %>,调其执行器跑 EJS
+ *      (如「按好感度切换人设」的条件条目)。
+ * 复刻其官方 evaluateWIEntities 的顺序(先宏后 EJS)。开关 renderWorldInfoTemplates 关闭时整体跳过。
+ *
+ * ⚠️ 变量取「当前」状态(prepareContext 默认)——对历史楼层摘要不是严格时点精确,但够用;
+ *    含写变量(setvar 等)的 EJS 每次摘要会额外执行、污染状态,故给了开关让用户可关。
+ * 单条失败不影响整体:退回该条上一步的文本(已展宏 / 原文),并打日志。
+ */
+async function renderWorldInfoContent(content: string, entry?: WorldInfoEntry): Promise<string> {
+  if (!apiSettings.renderWorldInfoTemplates) return content;
+  const ctx = getContext();
+  // ① 展宏(substituteParams 不存在时保持原文)
+  let text = typeof ctx?.substituteParams === 'function' ? ctx.substituteParams(content) : content;
+  // ② 无 EJS 标签则无需调模板插件(省去 prepareContext/sandbox 开销)
+  if (!text.includes('<%')) return text;
+  const ejs = getEjsTemplate();
+  if (!ejs) return text; // 未装 ST-Prompt-Template:只做了展宏
+  try {
+    const env = await ejs.prepareContext({ world_info: entry });
+    const out = await ejs.evalTemplate(text, env);
+    if (typeof out === 'string') text = out;
+  } catch (e) {
+    console.log('[柏宝书] 世界书 EJS 渲染失败(退回未执行文本):', e);
+  }
+  return text;
+}
+
+/**
  * 降级路径:走 ST 暴露的 getWorldInfoPrompt(只拿拼好的字符串,**无法按名字过滤**)。
  * 仅当 checkWorldInfo 取不到时使用——此时排除设置不生效,但至少摘要照常带世界书,不崩。
  * 蓝灯/相关条目可能落在 before、after、depth(@深度)、作者注 任一位置,全部提取。
@@ -142,7 +172,9 @@ async function fetchWorldInfoViaPrompt(scanText: string[]): Promise<string> {
   }
   for (const e of res.anBefore ?? []) if (typeof e === 'string') chunks.push(e);
   for (const e of res.anAfter ?? []) if (typeof e === 'string') chunks.push(e);
-  return joinWorldInfoChunks(chunks);
+  // 逐块渲染(展宏 + EJS);此路径拿不到条目对象,EJS 仅带当前状态上下文(无 world_info)
+  const rendered = await Promise.all(chunks.map(c => renderWorldInfoContent(c)));
+  return joinWorldInfoChunks(rendered);
 }
 
 /**
@@ -164,9 +196,12 @@ async function fetchWorldInfo(chat: STMessage[], targets: number[], name1: strin
     if (!activated) return '';
     // allActivatedEntries 可能是 Set<entry> 或 Map<key,entry>,统一取 values
     const entries = activated instanceof Map ? [...activated.values()] : [...activated];
-    const chunks = entries
-      .filter(e => e && !isWorldInfoEntryExcluded(e))
-      .map(e => (typeof e.content === 'string' ? e.content : ''));
+    // 逐条渲染(展宏 + 执行 EJS),让「按好感度切换人设」等动态条目拿到成品而非原文
+    const chunks = await Promise.all(
+      entries
+        .filter(e => e && !isWorldInfoEntryExcluded(e))
+        .map(e => renderWorldInfoContent(typeof e.content === 'string' ? e.content : '', e)),
+    );
     return joinWorldInfoChunks(chunks);
   } catch (e) {
     console.log('[柏宝书] 世界书激活失败(降级为不带设定):', e);
