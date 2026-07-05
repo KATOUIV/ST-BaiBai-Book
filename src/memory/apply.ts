@@ -3,7 +3,7 @@ import { fmtItemLogInline } from './prompts';
 import { memory, recomputeDerived, saveMemory, scheduleLeafFlush } from './store';
 import { readItemsTagText, writeItemLogTag, writeVarLogTag } from './timeTag';
 import { createEmptyMemory } from './types';
-import type { BaibaiMemory, ItemDelta, ItemLogEntry, JsonValue, LeafExtra, MemNpc, MemPlan, MemScene, MemSummary, NpcDelta, SceneDelta, SceneReparent, StoredDelta, SummaryDelta, VarOp, VarTemplate, VarTier } from './types';
+import type { BaibaiMemory, ItemDelta, ItemLogEntry, JsonValue, LeafExtra, MemNpc, MemPlan, MemScene, MemSummary, NpcDelta, PlanResolveItem, SceneDelta, SceneReparent, StoredDelta, SummaryDelta, VarOp, VarTemplate, VarTier } from './types';
 
 let idSeq = 0;
 /** 生成稳定唯一 id(不依赖 random;时间走 nowMs 便于测试注入) */
@@ -34,6 +34,11 @@ export function npcId(name: string): string {
 /** 计划 id:产生它的叶子 id + 在该叶子 add 数组里的序号 */
 export function planId(leafId: string, addIndex: number): string {
   return `plan:${leafId}#${addIndex}`;
+}
+
+/** 从一条 resolve 指令取稳定 plan id(兼容裸字符串旧数据) */
+export function resolveEntryId(r: PlanResolveItem): string {
+  return typeof r === 'string' ? r : r.id;
 }
 
 /** 规范化场景路径:逐段 trim,丢弃空段。返回干净的原文路径(保留大小写,仅去首尾空白) */
@@ -759,11 +764,16 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
       };
       mem.plans.push(plan);
     });
-    for (const pid of d.plans.resolve ?? []) {
-      const p = mem.plans.find(x => x.id === pid);
+    for (const r of d.plans.resolve ?? []) {
+      const p = mem.plans.find(x => x.id === resolveEntryId(r));
       if (p) {
         p.status = 'resolved';
         p.resolvedAt = t;
+        // 携带「怎么了结/为什么」;裸字符串旧数据无此信息,保持不写
+        if (typeof r !== 'string') {
+          p.outcome = r.outcome;
+          p.resolvedReason = r.reason?.trim() || undefined;
+        }
       }
     }
     for (const pid of d.plans.reopen ?? []) {
@@ -771,6 +781,8 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
       if (p) {
         p.status = 'open';
         p.resolvedAt = undefined;
+        p.outcome = undefined; // 重开 → 清掉上次了结的结论
+        p.resolvedReason = undefined;
       }
     }
     for (const pid of d.plans.remove ?? []) {
@@ -1009,14 +1021,24 @@ export function finalizeDelta(delta: SummaryDelta, openPlansOrdered: { id: strin
     const plans: NonNullable<StoredDelta['plans']> = {};
     if (delta.plans.add?.length) plans.add = delta.plans.add;
     if (delta.plans.resolve?.length) {
-      const ids: string[] = [];
+      const out: PlanResolveItem[] = [];
       for (const ref of delta.plans.resolve) {
-        const n = parseShortRef(ref);
+        // 短序号可能是裸字符串 "p2" 或带结局的对象 { id:"p2", outcome, reason }
+        const shortRef = typeof ref === 'string' ? ref : ref.id;
+        const n = parseShortRef(shortRef);
         if (n === null) continue;
         const target = openPlansOrdered[n - 1];
-        if (target) ids.push(target.id);
+        if (!target) continue;
+        if (typeof ref === 'string') {
+          out.push(target.id); // 旧格式:只翻译成稳定 id
+        } else {
+          const entry: PlanResolveItem = { id: target.id };
+          if (ref.outcome === 'done' || ref.outcome === 'cancelled' || ref.outcome === 'failed') entry.outcome = ref.outcome;
+          if (typeof ref.reason === 'string' && ref.reason.trim()) entry.reason = ref.reason.trim();
+          out.push(entry);
+        }
       }
-      if (ids.length) plans.resolve = ids;
+      if (out.length) plans.resolve = out;
     }
     if (Object.keys(plans).length) out.plans = plans;
   }
@@ -1129,12 +1151,13 @@ export function appendOpToLatestLeaf(op: StoredDelta): boolean {
   if (op.plans) {
     const dp = (d.plans ??= {});
     if (op.plans.add?.length) (dp.add ??= []).push(...op.plans.add);
-    for (const id of op.plans.resolve ?? []) {
-      dp.reopen = (dp.reopen ?? []).filter(x => x !== id); // 互斥
-      dp.resolve = [...(dp.resolve ?? []).filter(x => x !== id), id];
+    for (const r of op.plans.resolve ?? []) {
+      const rid = resolveEntryId(r);
+      dp.reopen = (dp.reopen ?? []).filter(x => x !== rid); // 互斥
+      dp.resolve = [...(dp.resolve ?? []).filter(x => resolveEntryId(x) !== rid), r];
     }
     for (const id of op.plans.reopen ?? []) {
-      dp.resolve = (dp.resolve ?? []).filter(x => x !== id); // 互斥
+      dp.resolve = (dp.resolve ?? []).filter(x => resolveEntryId(x) !== id); // 互斥
       dp.reopen = [...(dp.reopen ?? []).filter(x => x !== id), id];
     }
     for (const id of op.plans.remove ?? []) {

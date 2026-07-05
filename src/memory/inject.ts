@@ -446,7 +446,7 @@ export function buildStateInjectionText(): string {
   // 近期已完成的计划/悬念:防 AI 把刚了结的当未完成又去推进。与副API摘要同口径,只差截止点
   // (这里用全量 memory.plans;副API用 deriveMemory(chat, beforeIndex).plans)。
   const recentResolved = selectRecentResolvedPlans(memory.plans, apiSettings.recentResolvedPlansCount);
-  if (recentResolved.length) st.push(`近期已完成(已了结,勿当未完成再推进/重复记录):\n${fmtResolvedPlans(recentResolved)}`);
+  if (recentResolved.length) st.push(`近期已了结(已结案,含了结方式/原因;勿当未完成再推进/重复记录):\n${fmtResolvedPlans(recentResolved)}`);
 
   // 自定义变量:发当前状态 + 各字段「含义」给主模型(帮它理解并保持数值/设定连贯),明确框定为只读。
   // ⚠️ 绝不注入「变化规则」(rule)——那是给副API摘要用的「如何增删改」指令(含 set/assign 命令语法);

@@ -77,7 +77,7 @@ const timeLabel = computed(() => {
 /* ============ 变动 → 标签行(带定位信息,供就地编辑用) ============ */
 type Op = 'add' | 'update' | 'remove' | 'resolve' | 'reopen' | 'reparent';
 // 单字符曾让人费解(「改」是什么?),改用明确词条 + 语义色徽标(见 .bbs-fp-op 的 op-* 着色)
-const opLabel: Record<Op, string> = { add: '新增', update: '更新', remove: '移除', resolve: '达成', reopen: '重启', reparent: '迁移' };
+const opLabel: Record<Op, string> = { add: '新增', update: '更新', remove: '移除', resolve: '了结', reopen: '重启', reparent: '迁移' };
 
 // key 用于定位到 delta 里的具体桶+序号,如 'item:add:0'
 // text=主文本(名字/标题,一行),sub=副文本(描述/字段细节,淡色小字另起一行)。
@@ -159,8 +159,14 @@ const planTags = computed<Tag[]>(() => {
   (pl.add ?? []).forEach((x, i) =>
     out.push({ key: `plan:add:${i}`, op: 'add', bucket: 'add', idx: i, text: x.content, sub: x.kind === 'suspense' ? '悬念' : '计划', editable: true }),
   );
-  // resolve/reopen/remove 存 id,反查内容显示
-  (pl.resolve ?? []).forEach((id, i) => out.push({ key: `plan:resolve:${i}`, op: 'resolve', bucket: 'resolve', idx: i, text: planLabel('了结', id), editable: false }));
+  // resolve/reopen/remove 存 id,反查内容显示;resolve 还带 outcome/reason(兼容裸字符串旧数据)
+  (pl.resolve ?? []).forEach((r, i) => {
+    const id = typeof r === 'string' ? r : r.id;
+    const oc = typeof r === 'string' ? undefined : r.outcome;
+    const verb = oc === 'done' ? '达成' : oc === 'cancelled' ? '取消' : oc === 'failed' ? '失败' : '了结';
+    const reason = typeof r === 'string' ? '' : (r.reason?.trim() ?? '');
+    out.push({ key: `plan:resolve:${i}`, op: 'resolve', bucket: 'resolve', idx: i, text: planLabel(verb, id), sub: reason || undefined, editable: false });
+  });
   (pl.reopen ?? []).forEach((id, i) => out.push({ key: `plan:reopen:${i}`, op: 'reopen', bucket: 'reopen', idx: i, text: planLabel('重启', id), editable: false }));
   (pl.remove ?? []).forEach((id, i) => out.push({ key: `plan:remove:${i}`, op: 'remove', bucket: 'remove', idx: i, text: planLabel('删除', id), editable: false }));
   return out;

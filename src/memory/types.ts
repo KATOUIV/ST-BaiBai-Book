@@ -186,6 +186,27 @@ export interface MemNpc {
 }
 
 /**
+ * 计划/悬念的「了结方式」。区分三种截然不同的收场,避免统一「已完成」误导主模型:
+ *  - done      = 计划真去做成/兑现了、悬念真揭晓了(结果已明确);
+ *  - cancelled = 没做成而是被取消/撤回/放弃/作废/不再需要(如对方收回要求、当场被化解退让);
+ *  - failed    = 尝试过但失败,或悬念以坏结局收场。
+ */
+export type PlanOutcome = 'done' | 'cancelled' | 'failed';
+
+/**
+ * 一条「了结」指令。id:在 SummaryDelta 里是运行期短序号(p1/p2);在 StoredDelta 里是稳定 plan id。
+ * outcome/reason 携带「怎么了结、为什么」,注入时展示给主模型,消除「已完成却还反复提」的困惑。
+ */
+export interface PlanResolveEntry {
+  id: string;
+  outcome?: PlanOutcome;
+  /** 一句话了结原因(为什么下架 / 如何收场) */
+  reason?: string;
+}
+/** 兼容:历史数据/降级时元素可能是裸字符串(= 无 outcome/原因),故 resolve 元素两态皆可。 */
+export type PlanResolveItem = string | PlanResolveEntry;
+
+/**
  * 计划 / 悬念(派生产物,不持久化)。
  * id 确定性:`plan:${产生它的叶子id}#${在该叶子 add 数组里的序号}`。
  */
@@ -198,6 +219,10 @@ export interface MemPlan {
   status: 'open' | 'resolved';
   createdAt: number;
   resolvedAt?: number;
+  /** 了结方式(仅 status=resolved 时有);区分「真做了(done)」与「取消/作废(cancelled)」「失败(failed)」 */
+  outcome?: PlanOutcome;
+  /** 一句话了结原因(为什么下架/如何收场);注入给主模型,防「已完成却还提」 */
+  resolvedReason?: string;
   /** 故事内「创建时间」(AI 直接输出的字符串,如 1988/9/29);与 createdAt(真实毫秒)无关 */
   createdTime?: string;
   /** 故事内「目标时间」(AI 直接输出,允许模糊值如「以后有机会」或留空) */
@@ -422,8 +447,8 @@ export interface SummaryDelta {
   plans?: {
     /** createdTime/targetTime 由 AI 直接输出(故事内时间字符串);targetTime 允许模糊或省略 */
     add?: { kind: 'plan' | 'suspense'; content: string; createdTime?: string; targetTime?: string }[];
-    /** 按提示词里展示的短 id(p1/p2…)了结 */
-    resolve?: string[];
+    /** 按提示词里展示的短 id(p1/p2…)了结,每项带 outcome/reason 说明怎么了结;裸字符串兼容旧格式 */
+    resolve?: PlanResolveItem[];
   };
   /**
    * 指令型:自定义变量的路径命令数组(仿 MVU)。AI 看当前 JSON 状态 + 说明,产出本楼新事件对应的命令:
@@ -468,8 +493,8 @@ export interface StoredDelta {
   };
   plans?: {
     add?: { kind: 'plan' | 'suspense'; content: string; createdTime?: string; targetTime?: string }[];
-    /** 了结:稳定 plan id */
-    resolve?: string[];
+    /** 了结:稳定 plan id(带 outcome/reason);裸字符串兼容旧数据 */
+    resolve?: PlanResolveItem[];
     /** 内部/手动:删除 plan(稳定 id) */
     remove?: string[];
     /** 内部/手动:重新开启已了结 plan(稳定 id) */
