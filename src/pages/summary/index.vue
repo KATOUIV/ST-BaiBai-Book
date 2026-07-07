@@ -41,16 +41,19 @@ onUnmounted(() => offChatChanged?.());
 // 触屏判定:用于跳过弹窗自动聚焦(移动端自动聚焦会弹出输入法挡住界面)。
 const isTouch = typeof window !== 'undefined' && window.matchMedia?.('(hover: none)').matches;
 
-/* ============ 悬念簿(顶部)============ */
+/* ============ 计划 / 悬念(顶部两区)============
+ * 原先「悬念簿」把计划和悬念混在一栏;现拆成两个平级区,各自折叠、各自计数,
+ * 语义更清晰(计划=角色的打算,悬念=未解的谜团),也和下方「摘要」并列成三区。 */
 const newKind = ref<'plan' | 'suspense'>('plan');
 const newContent = ref('');
 const newTargetTime = ref(''); // 手动添加计划时的可选目标时间(故事内时间)
 // 手动添加是低频操作:用弹窗承载,平时只露一个小「+」按钮,不占版面。
 const composerOpen = ref(false);
 const contentInput = ref<HTMLTextAreaElement | null>(null);
-function openComposer() {
+// 从对应区的「+」进入:预选好类型省一步(弹窗内仍可切换)。
+function openComposer(kind: 'plan' | 'suspense') {
   if (!hasLeaf.value) return;
-  newKind.value = 'plan';
+  newKind.value = kind;
   newContent.value = '';
   newTargetTime.value = '';
   composerOpen.value = true;
@@ -62,32 +65,61 @@ function closeComposer() {
 }
 // 计划/悬念只展示「进行中」。点删除即移除——不再有「了结/已了结」概念。
 const openPlans = computed(() => memory.plans.filter(p => p.status === 'open'));
+// 按类型拆两栏:非 suspense 归计划(含旧数据 kind 缺省的情况),suspense 归悬念。
+const plansOnly = computed(() => openPlans.value.filter(p => p.kind !== 'suspense'));
+const suspenses = computed(() => openPlans.value.filter(p => p.kind === 'suspense'));
 const hasLeaf = computed(() => derivedMeta.hasLeaf);
 
-/* —— 悬念簿折叠 ——
- * 计划/悬念攒多了,整段很长,要滚很久才到下方的摘要。标题行兼作折叠开关。
+/* —— 折叠 ——
+ * 两区各自攒多了都会把下方摘要顶远,故各自可折叠。标题行兼作折叠开关。
  * 折叠态是本机视图偏好(同 activePage 那类临时导航态),走 localStorage、不进 apiSettings——
  * 跨设备同步它没意义,且不该污染真·设置。 */
+const PLAN_COLLAPSE_KEY = 'bbs.ui.planCollapsed.v1';
 const SUSPENSE_COLLAPSE_KEY = 'bbs.ui.suspenseCollapsed.v1';
-const suspenseCollapsed = ref(loadSuspenseCollapsed());
-function loadSuspenseCollapsed(): boolean {
+function loadCollapsed(key: string): boolean {
   try {
-    return localStorage.getItem(SUSPENSE_COLLAPSE_KEY) === '1';
+    return localStorage.getItem(key) === '1';
   } catch {
     return false;
   }
 }
-function toggleSuspense() {
-  suspenseCollapsed.value = !suspenseCollapsed.value;
+function persistCollapsed(key: string, v: boolean) {
   try {
-    localStorage.setItem(SUSPENSE_COLLAPSE_KEY, suspenseCollapsed.value ? '1' : '0');
+    localStorage.setItem(key, v ? '1' : '0');
   } catch {
     /* localStorage 不可用时仅本次会话生效 */
   }
 }
-// 没有计划/悬念就无可折叠:不显示箭头,也强制展开(避免删空后卡在收拢的空态)
-const suspenseFoldable = computed(() => openPlans.value.length > 0);
+const plansCollapsed = ref(loadCollapsed(PLAN_COLLAPSE_KEY));
+const suspenseCollapsed = ref(loadCollapsed(SUSPENSE_COLLAPSE_KEY));
+function toggleFold(kind: 'plan' | 'suspense') {
+  if (kind === 'plan') {
+    plansCollapsed.value = !plansCollapsed.value;
+    persistCollapsed(PLAN_COLLAPSE_KEY, plansCollapsed.value);
+  } else {
+    suspenseCollapsed.value = !suspenseCollapsed.value;
+    persistCollapsed(SUSPENSE_COLLAPSE_KEY, suspenseCollapsed.value);
+  }
+}
+// 无条目即无可折叠:不显示箭头,也强制展开(避免删空后卡在收拢的空态)
+const plansFoldable = computed(() => plansOnly.value.length > 0);
+const plansShown = computed(() => !plansCollapsed.value || !plansFoldable.value);
+const suspenseFoldable = computed(() => suspenses.value.length > 0);
 const suspenseShown = computed(() => !suspenseCollapsed.value || !suspenseFoldable.value);
+
+// 两区渲染配置:结构同构、仅类型/文案/计数色不同,用配置驱动一套模板避免两处漂移。
+const foldGroups = computed(() => [
+  {
+    kind: 'plan' as const, title: '计划', items: plansOnly.value,
+    foldable: plansFoldable.value, shown: plansShown.value,
+    empty: '还没有计划。摘要时会自动记下角色的打算,也可在此手动添加。',
+  },
+  {
+    kind: 'suspense' as const, title: '悬念', items: suspenses.value,
+    foldable: suspenseFoldable.value, shown: suspenseShown.value,
+    empty: '还没有悬念。故事里埋下的谜团、未解之事会记在这里。',
+  },
+]);
 
 // 叶子 id → 创建楼层。计划 id 形如 `plan:${叶子id}#${序号}`,由此反查创建该计划/悬念
 // 时所在楼层(与摘要列表的 #楼层 同源)。手动添加的计划挂在最新叶子上,显示其楼层。
@@ -541,55 +573,57 @@ provide(SUMMARY_CTX, {
 
 <template>
   <section class="bbs-page">
-    <!-- ===== 悬念簿 ===== -->
-    <!-- 标题行兼作折叠开关:点标题/箭头收展;右侧「+」独立,stop 冒泡避免误触折叠 -->
-    <div class="bbs-section-head">
-      <button
-        class="bbs-fold-head"
-        type="button"
-        :class="{ 'is-static': !suspenseFoldable }"
-        :disabled="!suspenseFoldable"
-        :aria-expanded="suspenseShown"
-        :title="suspenseFoldable ? (suspenseShown ? '收起悬念簿' : '展开悬念簿') : ''"
-        @click="toggleSuspense"
-      >
-        <Icon v-if="suspenseFoldable" name="chevron" class="bbs-fold-caret" :class="{ 'is-collapsed': !suspenseShown }" />
-        <h2 class="bbs-title bbs-title-sub">悬念簿</h2>
-        <span v-if="suspenseFoldable" class="bbs-fold-count">计 {{ openPlans.length }} 条</span>
-      </button>
-      <button
-        class="bbs-add-mini"
-        type="button"
-        :disabled="!hasLeaf"
-        :title="hasLeaf ? '手动添加计划 / 悬念' : '需先有摘要才能手动添加'"
-        @click="openComposer"
-      >
-        <Icon name="plus" />
-      </button>
-    </div>
+    <!-- ===== 计划 / 悬念:顶部两区,各自折叠计数 ===== -->
+    <!-- 结构同构、配置驱动(foldGroups):标题行兼折叠开关,右侧「+」独立(disabled 时不响应,不误触折叠) -->
+    <div v-for="g in foldGroups" :key="g.kind" class="bbs-fold-section">
+      <div class="bbs-section-head">
+        <button
+          class="bbs-fold-head"
+          type="button"
+          :class="{ 'is-static': !g.foldable }"
+          :disabled="!g.foldable"
+          :aria-expanded="g.shown"
+          :title="g.foldable ? (g.shown ? `收起${g.title}` : `展开${g.title}`) : ''"
+          @click="toggleFold(g.kind)"
+        >
+          <Icon v-if="g.foldable" name="chevron" class="bbs-fold-caret" :class="{ 'is-collapsed': !g.shown }" />
+          <h2 class="bbs-title bbs-title-sub">{{ g.title }}</h2>
+          <span v-if="g.foldable" class="bbs-fold-count">{{ g.items.length }}</span>
+        </button>
+        <button
+          class="bbs-add-mini"
+          type="button"
+          :disabled="!hasLeaf"
+          :title="hasLeaf ? `手动添加${g.title}` : '需先有摘要才能手动添加'"
+          @click="openComposer(g.kind)"
+        >
+          <Icon name="plus" />
+        </button>
+      </div>
 
-    <!-- grid 1fr↔0fr 收展:高度自适应、无需写死 max-height;reduced-motion 下瞬切(见样式) -->
-    <div class="bbs-fold-wrap" :class="{ 'is-collapsed': !suspenseShown }">
-      <div class="bbs-fold-inner">
-        <div v-if="openPlans.length" class="bbs-plan-group">
-          <div v-for="p in openPlans" :key="p.id" class="bbs-plan">
-            <div class="bbs-plan-head">
-              <span class="bbs-plan-kind" :class="p.kind">{{ p.kind === 'suspense' ? '悬念' : '计划' }}</span>
-              <span v-if="planFloor(p.id) !== undefined" class="bbs-plan-floor">#{{ planFloor(p.id) }}</span>
-              <span class="bbs-plan-acts">
-                <button class="bbs-plan-act" type="button" title="编辑" @click="openPlanEdit(p)"><Icon name="edit" /></button>
-                <button class="bbs-plan-act bbs-plan-del" type="button" title="删除" @click="removePlan(p.id)"><Icon name="close" /></button>
-              </span>
-            </div>
-            <p class="bbs-plan-content">{{ p.content }}</p>
-            <!-- 故事内时间:立于(创建时间)/ 目标(目标时间),任一存在才显示 -->
-            <div v-if="p.createdTime || p.targetTime" class="bbs-plan-times">
-              <span v-if="p.createdTime" class="bbs-plan-time">立于 {{ p.createdTime }}</span>
-              <span v-if="p.targetTime" class="bbs-plan-time bbs-plan-time-target">目标 {{ p.targetTime }}</span>
+      <!-- grid 1fr↔0fr 收展:高度自适应、无需写死 max-height;reduced-motion 下瞬切(见样式) -->
+      <div class="bbs-fold-wrap" :class="{ 'is-collapsed': !g.shown }">
+        <div class="bbs-fold-inner">
+          <div v-if="g.items.length" class="bbs-plan-group">
+            <div v-for="p in g.items" :key="p.id" class="bbs-plan">
+              <div class="bbs-plan-head">
+                <span class="bbs-plan-kind" :class="p.kind">{{ p.kind === 'suspense' ? '悬念' : '计划' }}</span>
+                <span v-if="planFloor(p.id) !== undefined" class="bbs-plan-floor">#{{ planFloor(p.id) }}</span>
+                <span class="bbs-plan-acts">
+                  <button class="bbs-plan-act" type="button" title="编辑" @click="openPlanEdit(p)"><Icon name="edit" /></button>
+                  <button class="bbs-plan-act bbs-plan-del" type="button" title="删除" @click="removePlan(p.id)"><Icon name="close" /></button>
+                </span>
+              </div>
+              <p class="bbs-plan-content">{{ p.content }}</p>
+              <!-- 故事内时间:立于(创建时间)/ 目标(目标时间),任一存在才显示 -->
+              <div v-if="p.createdTime || p.targetTime" class="bbs-plan-times">
+                <span v-if="p.createdTime" class="bbs-plan-time">立于 {{ p.createdTime }}</span>
+                <span v-if="p.targetTime" class="bbs-plan-time bbs-plan-time-target">目标 {{ p.targetTime }}</span>
+              </div>
             </div>
           </div>
+          <p v-else class="bbs-plan-empty">{{ g.empty }}</p>
         </div>
-        <p v-else class="bbs-plan-empty">还没有计划或悬念。摘要时会自动捕捉,也可手动添加。</p>
       </div>
     </div>
 
@@ -1018,6 +1052,10 @@ provide(SUMMARY_CTX, {
   border-radius: var(--bbs-radius-pill);
   padding: 1px 9px;
   font-variant-numeric: tabular-nums;
+}
+/* 两区平级并列:靠间距 + 各自标题分隔即可;更重的鱼尾分章线留给「账目区 ↔ 摘要」那道界 */
+.bbs-fold-section + .bbs-fold-section {
+  margin-top: 22px;
 }
 
 /* —— 可收展容器:grid 1fr↔0fr,高度随内容自适应,无需写死 max-height —— */
