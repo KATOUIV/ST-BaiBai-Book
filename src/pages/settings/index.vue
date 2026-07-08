@@ -888,6 +888,11 @@ function scorePct(score: number): number {
         </label>
         <p class="bbs-field-hint">每次总结多少条摘要,不计算 user 楼层,0 为关闭自动总结。</p>
         <label class="bbs-num-row">
+          <span class="bbs-field-label">总结时保留摘要数</span>
+          <input v-model.number="apiSettings.leafKeepRecent" class="bbs-input bbs-num" type="number" min="0" />
+        </label>
+        <p class="bbs-field-hint">总结时在末尾保留这么多条摘要不压缩,让隐藏区始终留一截细节、避免总结后信息断崖。例:每次总结 12、这里填 3,则攒够 15 条才总结,压最旧 12 条,留最新 3 条摘要。0 为攒够即全压(旧行为),默认 3。</p>
+        <label class="bbs-num-row">
           <span class="bbs-field-label">二次总结</span>
           <input v-model.number="apiSettings.resummaryThreshold" class="bbs-input bbs-num" type="number" min="0" />
         </label>

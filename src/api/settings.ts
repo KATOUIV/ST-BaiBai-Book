@@ -178,6 +178,14 @@ export interface ApiSettings {
   renderWorldInfoTemplates: boolean;
   /** 叶子摘要积累到 N 条时,压成一条 L1 总结(L0→L1 阈值,0=关闭) */
   leafBatchThreshold: number;
+  /**
+   * 总结时**在叶子层保留最近 N 条摘要不压缩**(仅 L0→L1 生效,不影响更高层)。
+   * 作用:压缩把一批叶子塌成一段 L1 后,注入端只走「根」——被收纳的叶子不再单独注入,
+   * 细颗粒会一次性丢失(用户实测的「断崖」)。留一截最新叶子当根,注入端始终有细节兜底。
+   * 机制:触发门槛抬到 `leafBatchThreshold + leafKeepRecent`,但每次仍只压最旧的
+   * `leafBatchThreshold` 条(不改总结质量),newest 的 N 条自然留下。
+   * 0=保持旧行为(攒够即全压);默认 3。设太大 = 迟迟不压、叶子堆积。 */
+  leafKeepRecent: number;
   /** L1 及以上每积累到 N 条时,压成上一层总结(L≥1→L+1 阈值,0=关闭) */
   resummaryThreshold: number;
   /** 状态快照里附带「近期已完成计划/悬念」的条数:**计划、悬念各取最近 N 条**(0=不附带)。
@@ -272,6 +280,7 @@ function defaults(): ApiSettings {
     wiPatternsSeeded: false,
     renderWorldInfoTemplates: true,
     leafBatchThreshold: 12,
+    leafKeepRecent: 3,
     resummaryThreshold: 7,
     recentResolvedPlansCount: 5,
     summaryMaxRetries: 1,
@@ -358,6 +367,11 @@ function normalize(raw: unknown): ApiSettings {
   merged.channels = (Array.isArray(merged.channels) ? merged.channels : []).map(normalizeChannel);
   // 字数档位:仅两个合法值,旧数据缺失/非法回退详细(= 老用户行为不变)
   merged.verbosity = merged.verbosity === 'concise' ? 'concise' : 'detailed';
+  // 叶子层保留条数:非负整数,缺失/非法回退默认 3(0=旧行为攒够即全压)
+  merged.leafKeepRecent =
+    Number.isFinite(merged.leafKeepRecent) && merged.leafKeepRecent >= 0
+      ? Math.floor(merged.leafKeepRecent)
+      : 3;
   // 近期已完成计划条数:非负整数,缺失/非法回退默认 5(计划/悬念各取 N;0=不附带)
   merged.recentResolvedPlansCount =
     Number.isFinite(merged.recentResolvedPlansCount) && merged.recentResolvedPlansCount >= 0
@@ -488,6 +502,7 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.wiPatternsSeeded = src.wiPatternsSeeded;
   target.renderWorldInfoTemplates = src.renderWorldInfoTemplates;
   target.leafBatchThreshold = src.leafBatchThreshold;
+  target.leafKeepRecent = src.leafKeepRecent;
   target.resummaryThreshold = src.resummaryThreshold;
   target.recentResolvedPlansCount = src.recentResolvedPlansCount;
   target.summaryMaxRetries = src.summaryMaxRetries;

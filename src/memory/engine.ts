@@ -817,6 +817,9 @@ function applyLeafForFloor(
   delta: SummaryDelta,
   stateBefore: ReturnType<typeof deriveMemory>,
 ): void {
+  if (!chat[aiFloor]) {
+    throw new Error(`摘要落叶失败:楼层 #${aiFloor} 已不存在(可能在请求期间被删除)`);
+  }
   // 时间锚点:从该楼正文标签读起止(先裁剪到正文段,跳过思维链/状态栏里混入的同名标签)
   const tag = parseTimeRange(clampToTimeTags(chat[aiFloor].mes));
 
@@ -865,6 +868,9 @@ async function summarizeFloorWork(
 ): Promise<void> {
   const ctx = getContext();
   if (!ctx) throw new Error('无 ST 上下文');
+  if (!chat[aiFloor]) {
+    throw new Error(`摘要失败:楼层 #${aiFloor} 已不存在(可能在请求期间被删除)`);
+  }
 
   const covered = coveredSet(chat);
   const targets = floorTargets(chat, aiFloor, covered);
@@ -1290,7 +1296,11 @@ export async function checkResummary(): Promise<number> {
     if (!threshold || threshold < 2) continue;
 
     const roots = rootsAtLevel(level, chat);
-    if (roots.length < threshold) continue;
+    // 叶子层(L0→L1)保留最近 N 条不压:门槛抬到 阈值+保留数,但下面仍只压最旧的 阈值 条,
+    // newest 的 N 条自然留作根、继续被逐条注入,避免「一次全压塌成 L1」的注入断崖。
+    // 仅 level 0 生效(更高层已是压缩散文,再留无意义);keep=0 即退回旧行为。
+    const keep = level === 0 ? Math.max(0, apiSettings.leafKeepRecent) : 0;
+    if (roots.length < threshold + keep) continue;
 
     const sender = resolveSender('resummary');
     if ('error' in sender) {
