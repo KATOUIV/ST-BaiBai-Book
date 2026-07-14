@@ -117,8 +117,12 @@ function buildView(
       timeLabel: s.timeLabel,
       createdAt: s.createdAt,
       childIds: s.childIds ?? [],
-      msgIndex: -1,
-      active: false,
+      // 导入历史以覆盖截止楼作为“历史发生位置”,便于 beforeIndex 判定;普通 comp 仍由后代叶子决定。
+      msgIndex: s.imported ? (s.importedFloorEnd ?? -1) : -1,
+      active: s.imported === true,
+      atomic: s.imported === true,
+      floorStart: s.importedFloorStart,
+      floorEnd: s.importedFloorEnd,
     });
   }
 

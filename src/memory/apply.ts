@@ -1433,6 +1433,9 @@ export function addSummary(
     timeEnd: s.timeEnd,
     timeLabel: s.timeLabel,
     childIds: s.childIds ?? [],
+    imported: s.imported,
+    importedFloorStart: s.importedFloorStart,
+    importedFloorEnd: s.importedFloorEnd,
   };
   memory.summaries.push(rec);
   saveMemory();
@@ -1976,6 +1979,7 @@ export function pruneBrokenComps(): boolean {
     if (verdict.has(id)) return verdict.get(id)!;
     const comp = byId.get(id);
     if (!comp) return liveLeafIds.has(id); // 不是压缩节点:看是不是现存有效叶子
+    if (comp.imported) return true; // 导入历史是无 child 的原子节点,楼层范围直接代表其完整性
     if (stack.has(id)) return false; // 防环
     stack.add(id);
     let ok = comp.childIds.length > 0;

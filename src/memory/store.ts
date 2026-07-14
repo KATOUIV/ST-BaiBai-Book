@@ -278,6 +278,15 @@ function cleanSummaryNode(s: MemSummary, idx: number): MemSummary {
     timeEnd: optText(s.timeEnd),
     timeLabel: optText(s.timeLabel),
     childIds: Array.isArray(s.childIds) ? s.childIds.map(x => scalarText(x)).filter(Boolean) : [],
+    imported: s.imported === true ? true : undefined,
+    importedFloorStart:
+      s.imported === true && Number.isFinite(s.importedFloorStart) && (s.importedFloorStart as number) >= 0
+        ? Math.floor(s.importedFloorStart as number)
+        : undefined,
+    importedFloorEnd:
+      s.imported === true && Number.isFinite(s.importedFloorEnd) && (s.importedFloorEnd as number) >= 0
+        ? Math.floor(s.importedFloorEnd as number)
+        : undefined,
   };
 }
 

@@ -20,6 +20,7 @@ export interface SummaryRow {
   floorHi: number;
   msgIndex?: number;
   stale?: boolean;
+  imported?: boolean;
 }
 
 export interface SummaryCtx {
@@ -34,7 +35,7 @@ export interface SummaryCtx {
   onDelete: (r: SummaryRow) => void;
   nodeFloors: (n: ViewNode, map: Map<string, ViewNode>) => [number, number];
   toRow: (n: ViewNode, map: Map<string, ViewNode>) => SummaryRow;
-  levelLabel: (level: number) => string;
+  levelLabel: (level: number, imported?: boolean) => string;
   floorLabel: (r: SummaryRow) => string;
   rowTime: (r: SummaryRow) => string;
   rowRelative: (r: SummaryRow) => string;

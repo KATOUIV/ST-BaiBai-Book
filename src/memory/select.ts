@@ -24,6 +24,11 @@ export interface ViewNode {
   childIds: string[]; // comp 才有
   msgIndex: number; // leaf 才有意义(排序键);comp 取 -1
   active: boolean; // leaf:所在消息已隐藏
+  /** 无逐楼 child 的导入历史节点;选择算法把它视为与 leaf 同类的完整终端。 */
+  atomic?: boolean;
+  /** 原子导入历史的显式楼层范围。 */
+  floorStart?: number;
+  floorEnd?: number;
 }
 
 /**
@@ -37,7 +42,7 @@ export function selectViewNodes(
   const { byId, roots } = view;
 
   const collectLeaves = (n: ViewNode, acc: ViewNode[]): void => {
-    if (n.kind === 'leaf') {
+    if (n.kind === 'leaf' || n.atomic) {
       acc.push(n);
       return;
     }
@@ -49,7 +54,7 @@ export function selectViewNodes(
   // 完好:每个 childId 都能解析(无悬空)且子节点自身也完好;叶子恒完好。memoized。
   const intactMemo = new Map<string, boolean>();
   const isIntact = (n: ViewNode): boolean => {
-    if (n.kind === 'leaf') return true;
+    if (n.kind === 'leaf' || n.atomic) return true;
     const cached = intactMemo.get(n.id);
     if (cached !== undefined) return cached;
     intactMemo.set(n.id, false); // 防环:递归未归前先占位 false
@@ -74,7 +79,7 @@ export function selectViewNodes(
   const visit = (n: ViewNode): void => {
     if (visited.has(n.id)) return;
     visited.add(n.id);
-    if (n.kind === 'leaf') {
+    if (n.kind === 'leaf' || n.atomic) {
       if (leafEligible(n)) chosen.push(n);
       return;
     }
@@ -92,9 +97,12 @@ export function selectViewNodes(
   // 时间序拼接:叶子用楼层序;压缩节点用其最早后代叶子的楼层序
   const sortKey = (n: ViewNode): number => {
     if (n.kind === 'leaf') return n.msgIndex;
+    if (n.atomic) return n.floorStart ?? n.msgIndex;
     const ls: ViewNode[] = [];
     collectLeaves(n, ls);
-    return ls.length ? Math.min(...ls.map(l => l.msgIndex)) : Number.MAX_SAFE_INTEGER;
+    return ls.length
+      ? Math.min(...ls.map(l => l.atomic ? (l.floorStart ?? l.msgIndex) : l.msgIndex))
+      : Number.MAX_SAFE_INTEGER;
   };
   return chosen.sort((a, b) => sortKey(a) - sortKey(b));
 }

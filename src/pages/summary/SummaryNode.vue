@@ -35,7 +35,7 @@ const isChild = computed(() => props.depth > 0);
       <div class="bbs-summary-main">
         <header class="bbs-summary-meta">
           <template v-if="row.kind === 'comp'">
-            <span class="bbs-summary-badge">{{ ctx.levelLabel(row.level) }}</span>
+            <span class="bbs-summary-badge">{{ ctx.levelLabel(row.level, row.imported) }}</span>
             <span class="bbs-summary-loc">{{ ctx.floorLabel(row) }}</span>
             <span v-if="ctx.rowRelative(row)" class="bbs-summary-rel">({{ ctx.rowRelative(row) }})</span>
             <span v-if="ctx.rowTime(row)" class="bbs-summary-time">{{ ctx.rowTime(row) }}</span>
@@ -47,10 +47,10 @@ const isChild = computed(() => props.depth > 0);
           </template>
           <!-- 操作键:仅根行(展开出的子行只读,避免误删祖先链) -->
           <span v-if="!isChild" class="bbs-summary-acts">
-            <button class="bbs-summary-act" type="button" :title="row.kind === 'comp' ? '编辑总结' : '编辑摘要'" @click="ctx.openEdit(row)">
+            <button class="bbs-summary-act" type="button" :title="row.imported ? '编辑导入历史' : row.kind === 'comp' ? '编辑总结' : '编辑摘要'" @click="ctx.openEdit(row)">
               <Icon name="edit" />
             </button>
-            <button class="bbs-summary-act bbs-summary-del" type="button" :title="row.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'" @click="ctx.onDelete(row)">
+            <button class="bbs-summary-act bbs-summary-del" type="button" :title="row.imported ? '删除导入历史' : row.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'" @click="ctx.onDelete(row)">
               <Icon name="trash" />
             </button>
           </span>

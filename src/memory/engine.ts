@@ -369,13 +369,34 @@ export function resolveKeepStart(chat: STMessage[]): number {
   return aiIdx[aiIdx.length - keep];
 }
 
+/** 当前森林里的导入历史覆盖范围。节点即使已被更高层总结收纳,其接管范围仍然有效。 */
+function importedHistoryRanges(): Array<[number, number]> {
+  return memory.summaries
+    .filter(s => s.imported && Number.isFinite(s.importedFloorEnd))
+    .map(s => {
+      const start = Math.max(0, Math.floor(s.importedFloorStart ?? 0));
+      const end = Math.max(start, Math.floor(s.importedFloorEnd ?? start));
+      return [start, end] as [number, number];
+    });
+}
+
+function floorInImportedRanges(floor: number, ranges: Array<[number, number]>): boolean {
+  return ranges.some(([start, end]) => floor >= start && floor <= end);
+}
+
+function importedHistoryCovers(floor: number): boolean {
+  return floorInImportedRanges(floor, importedHistoryRanges());
+}
+
 /**
  * 找出"待摘要"的 AI 楼层:AI 楼且没有有效叶子(无叶 / 陈旧)。由旧到新。
  * 新消息、regenerate 新 swipe、编辑过的楼,都因 leafValid=false 自然落入。
  */
 export function pendingAiFloors(chat: STMessage[]): number[] {
   const out: number[] = [];
+  const imported = importedHistoryRanges();
   for (let i = 0; i < chat.length; i++) {
+    if (floorInImportedRanges(i, imported)) continue;
     if (isAiFloor(chat[i]) && !leafValid(chat[i])) out.push(i);
   }
   return out;
@@ -431,6 +452,7 @@ export function openingPendingFloor(chat: STMessage[]): number {
   for (let i = lastAi - 1; i >= 0; i--) {
     if (isAiFloor(chat[i])) return -1; // 之前还有别的 AI 楼 → 不是开场白
   }
+  if (importedHistoryCovers(lastAi)) return -1; // 已由导入历史接管,不再为开场白单独造叶子
   if (leafValid(chat[lastAi])) return -1; // 已摘 → 锚点已在
   const tag = parseTimeRange(clampToTimeTags(chat[lastAi].mes));
   if (tag.start && tag.end) return -1; // 开场白自带时间标签 → 主模型能读,不必先摘
@@ -555,11 +577,12 @@ async function afterSummaryHideAndInject(chat: STMessage[]): Promise<void> {
 /**
  * 对外的「检测一次隐藏」:按当前叶子覆盖情况同步滑动窗口隐藏 + 刷新注入。
  * 供迁移等批量写入叶子后调用,复用摘要收尾同一套逻辑;守卫与摘要流程一致
- * (引擎在此聊天不生效 / 自动摘要关闭则不隐藏,仅刷新注入)。
+ * (引擎在此聊天不生效 / 自动摘要关闭则不隐藏,仅刷新注入)。force=true 供用户主动导入/删除
+ * 旧总结时立即同步覆盖范围,不受自动摘要开关影响。
  */
-export async function syncHiddenNow(): Promise<void> {
+export async function syncHiddenNow(force = false): Promise<void> {
   const chat = getContext()?.chat ?? [];
-  if (engineActiveHere() && apiSettings.autoSummaryEnabled) {
+  if (force || (engineActiveHere() && apiSettings.autoSummaryEnabled)) {
     await afterSummaryHideAndInject(chat);
   } else {
     refreshInjection();
@@ -599,6 +622,7 @@ export async function summarizeFloor(floor: number): Promise<void> {
   const ctx = getContext();
   if (!ctx) return;
   const chat = ctx.chat ?? [];
+  if (importedHistoryCovers(floor)) return;
   if (!isAiFloor(chat[floor]) || leafValid(chat[floor])) return;
   await runSummary(floor);
   await afterSummaryHideAndInject(chat);
@@ -775,6 +799,7 @@ export function coalesceRanges(indices: number[]): Array<[number, number]> {
 async function syncWindowHiddenState(chat: STMessage[]): Promise<void> {
   const keepStart = resolveKeepStart(chat);
   const covered = coveredSet(chat);
+  const imported = importedHistoryRanges();
   const ctx = getContext();
   if (!ctx) return;
 
@@ -783,7 +808,9 @@ async function syncWindowHiddenState(chat: STMessage[]): Promise<void> {
   for (let i = 0; i < chat.length; i++) {
     const m = chat[i];
     if (!m) continue;
-    const shouldHide = i < keepStart && covered.has(i);
+    // 用户明确把一段旧剧情交给“导入历史”接管时,整段都隐藏,不再受最近窗口保留数影响,
+    // 否则导入正文会与窗口内旧原文重复注入。删除导入节点后会自动走下面的 unhide。
+    const shouldHide = covered.has(i) && (i < keepStart || floorInImportedRanges(i, imported));
     if (shouldHide) {
       if (!m.extra?.bbs_hidden || m.is_system !== true) toHide.push(i);
     } else if (m.extra?.bbs_hidden) {
@@ -1379,6 +1406,11 @@ export async function batchBackfill(opts: BatchBackfillOpts = {}): Promise<Batch
  */
 export function coveredSet(chat: STMessage[]): Set<number> {
   const covered = new Set<number>();
+  for (const [start, end] of importedHistoryRanges()) {
+    for (let i = start; i <= Math.min(end, chat.length - 1); i++) {
+      if (!chat[i]?.extra?.bbs_omit) covered.add(i); // 番外楼仍遵守“完全忽略”,不因导入范围而被隐藏
+    }
+  }
   let segStart = 0;
   for (let i = 0; i < chat.length; i++) {
     if (!isAiFloor(chat[i])) continue;
@@ -1569,6 +1601,10 @@ function collectSelectableNodes(chat: STMessage[]): Map<string, SelectableNode> 
     if (lf !== undefined) { acc.push(lf); return; }
     const c = byComp.get(id);
     if (!c) return;
+    if (c.imported) {
+      acc.push(c.importedFloorStart ?? 0, c.importedFloorEnd ?? c.importedFloorStart ?? 0);
+      return;
+    }
     for (const cid of c.childIds ?? []) floorsOf(cid, seen, acc);
   };
   for (const s of memory.summaries) {

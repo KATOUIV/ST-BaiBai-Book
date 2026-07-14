@@ -308,8 +308,14 @@ export interface MemSummary {
   timeEnd?: string;
   /** 旧字段:生成时的当前时间快照。新数据用 timeStart/timeEnd;保留它做旧数据回退展示 */
   timeLabel?: string;
-  /** 直接收纳的下层节点 id(L1→叶子id,L2+→下层压缩节点id) */
+  /** 直接收纳的下层节点 id(L1→叶子id,L2+→下层压缩节点id);导入历史作为原子节点时为空。 */
   childIds: string[];
+  /** 从插件外部导入的原子历史节点。它没有逐楼叶子,由下面的楼层范围直接代表旧剧情。 */
+  imported?: boolean;
+  /** 导入历史覆盖的起始楼层(当前第一版固定为 0,保留字段供以后扩展分段导入)。 */
+  importedFloorStart?: number;
+  /** 导入历史覆盖的截止楼层(含)。范围内楼层不再重复补摘。 */
+  importedFloorEnd?: number;
 }
 
 /** 覆盖型当前状态 */

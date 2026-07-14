@@ -2,9 +2,9 @@
 import Icon from '@/components/Icon.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import ModalMask from '@/components/ModalMask.vue';
-import { appendOpToLatestLeaf, deleteLeafAt, deleteSummary, editLeafAt, editPlan, editSummary } from '@/memory/apply';
+import { addSummary, appendOpToLatestLeaf, deleteLeafAt, deleteSummary, editLeafAt, editPlan, editSummary, invalidateSummaryAncestors } from '@/memory/apply';
 import { apiSettings } from '@/api/settings';
-import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, resummarizeNow, summarizeFloor, summarizeSelected } from '@/memory/engine';
+import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, isAiFloor, resummarizeNow, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
 import { refreshInjection, selectViewNodes, type ViewNode } from '@/memory/inject';
 import { compactTimeLabel, formatRange, splitTimeLabel } from '@/memory/timeTag';
 import { relativeTimeLabel, weekdayLabel } from '@/memory/timeRel';
@@ -24,6 +24,7 @@ const resetViewStates = () => {
   expanded.value = new Set();
   searchQuery.value = '';
   searchOpen.value = false;
+  closeImportHistory();
   exitSelectMode();
 };
 let offChatChanged: (() => void) | null = null;
@@ -276,7 +277,12 @@ const byId = computed<Map<string, ViewNode>>(() => {
     m.set(s.id, {
       id: s.id, kind: 'comp', level: s.level, text: s.text,
       timeStart: s.timeStart, timeEnd: s.timeEnd, timeLabel: s.timeLabel,
-      createdAt: s.createdAt, childIds: s.childIds ?? [], msgIndex: -1, active: false,
+      createdAt: s.createdAt, childIds: s.childIds ?? [],
+      msgIndex: s.imported ? (s.importedFloorEnd ?? -1) : -1,
+      active: s.imported === true,
+      atomic: s.imported === true,
+      floorStart: s.importedFloorStart,
+      floorEnd: s.importedFloorEnd,
     });
   }
   return m;
@@ -289,6 +295,11 @@ function nodeFloors(n: ViewNode, map: Map<string, ViewNode>): [number, number] {
   const walk = (x: ViewNode): void => {
     if (seen.has(x.id)) return;
     seen.add(x.id);
+    if (x.atomic) {
+      if (typeof x.floorStart === 'number') acc.push(x.floorStart);
+      if (typeof x.floorEnd === 'number') acc.push(x.floorEnd);
+      return;
+    }
     if (x.kind === 'leaf') { acc.push(x.msgIndex); return; }
     for (const cid of x.childIds) {
       const c = map.get(cid);
@@ -315,6 +326,7 @@ function toRow(n: ViewNode, map: Map<string, ViewNode>): SummaryRow {
     floorHi: hi,
     msgIndex: n.kind === 'leaf' ? n.msgIndex : undefined,
     stale: false,
+    imported: n.atomic === true,
   };
 }
 
@@ -337,6 +349,84 @@ const searchOpen = ref(false);
 const searchInput = ref<HTMLInputElement | null>(null);
 const selectMode = ref(false);
 const selectedIds = ref<Set<string>>(new Set());
+
+/* ---- 导入旧总结:第一版只接收粘贴文本 + 从 #0 起的覆盖截止楼层。 ---- */
+const importHistoryOpen = ref(false);
+const importHistoryText = ref('');
+const importHistoryFloor = ref(0);
+const importHistoryMaxFloor = ref(0);
+
+function closeImportHistory() {
+  importHistoryOpen.value = false;
+}
+
+function openImportHistory() {
+  if (memory.summaries.some(s => s.imported)) {
+    toast('当前聊天已有一条导入历史;请直接编辑或删除后重导', 'warning');
+    return;
+  }
+  const chat = getContext()?.chat ?? [];
+  let lastAi = -1;
+  for (let i = chat.length - 1; i >= 0; i--) {
+    if (isAiFloor(chat[i])) { lastAi = i; break; }
+  }
+  if (lastAi < 0) {
+    toast('当前聊天没有可接管的 AI 剧情楼层', 'warning');
+    return;
+  }
+  importHistoryText.value = '';
+  importHistoryMaxFloor.value = lastAi;
+  importHistoryFloor.value = lastAi;
+  importHistoryOpen.value = true;
+}
+
+async function saveImportedHistory() {
+  const text = importHistoryText.value.trim();
+  const floor = Number(importHistoryFloor.value);
+  if (!text) {
+    toast('请先粘贴旧总结正文', 'warning');
+    return;
+  }
+  if (!Number.isInteger(floor) || floor < 0 || floor > importHistoryMaxFloor.value) {
+    toast(`覆盖截止楼层应在 #0 - #${importHistoryMaxFloor.value} 之间`, 'warning');
+    return;
+  }
+  const chat = getContext()?.chat ?? [];
+  if (!isAiFloor(chat[floor])) {
+    toast('覆盖截止楼层必须是一条 AI 剧情楼层,避免把尚未回应的用户消息一起隐藏', 'warning');
+    return;
+  }
+  if (memory.summaries.some(s => s.imported)) {
+    toast('当前聊天已有导入历史,没有重复导入', 'warning');
+    return;
+  }
+  // 不静默覆盖柏宝书已经做过的逐楼摘要:重叠时两套叙事会同时进入上下文,应由用户先处理边界。
+  const overlap = derivedMeta.leaves.some(l => !l.stale && l.msgIndex <= floor);
+  if (overlap) {
+    toast('所选范围内已有柏宝书摘要;请缩小截止楼层,或先删除重叠摘要', 'warning');
+    return;
+  }
+
+  const existingTimes = [
+    ...memory.summaries.map(s => s.createdAt),
+    ...derivedMeta.leaves.filter(l => !l.stale).map(l => l.createdAt),
+  ].filter(Number.isFinite);
+  const createdAt = (existingTimes.length ? Math.min(...existingTimes) : Date.now()) - 1;
+  addSummary({
+    text,
+    level: 2,
+    auto: false,
+    childIds: [],
+    imported: true,
+    importedFloorStart: 0,
+    importedFloorEnd: floor,
+    createdAt,
+  });
+  closeImportHistory();
+  recomputeDerived();
+  await syncHiddenNow(true);
+  toast(`已导入旧总结,接管 #0 - #${floor}`, 'success');
+}
 
 const searching = computed(() => searchQuery.value.trim().length > 0);
 
@@ -525,7 +615,8 @@ const currentTime = computed(() => derivedMeta.latestStoryTime || memory.state.t
 /** 当前时间的周几(仅标准公历带年份才有);展示用 */
 const currentWeekday = computed(() => weekdayLabel(currentTime.value));
 
-function levelLabel(level: number): string {
+function levelLabel(level: number, imported = false): string {
+  if (imported) return '导入历史';
   if (level === 0) return '摘要';
   return `总结L${level}`;
 }
@@ -535,11 +626,18 @@ function floorLabel(r: SummaryRow): string {
   return r.floorLo === r.floorHi ? `#${r.floorLo}` : `#${r.floorLo} - #${r.floorHi}`;
 }
 
-function onDelete(r: SummaryRow) {
+async function onDelete(r: SummaryRow) {
   if (r.kind === 'leaf') {
     if (!confirm('删除这条摘要?它带来的物品、计划、时间地点变化会按剩余摘要重新计算(可能回退);包含它的总结也会一并删除。原文楼层仍保持隐藏。')) return;
     if (typeof r.msgIndex === 'number') deleteLeafAt(r.msgIndex);
   } else {
+    if (r.imported) {
+      if (!confirm('删除这条导入历史?它接管的旧楼层会重新显示并回到待摘要状态;原世界书内容不受影响。')) return;
+      invalidateSummaryAncestors(r.id);
+      recomputeDerived();
+      await syncHiddenNow(true);
+      return;
+    }
     if (!confirm('删除这条总结?被它收纳的下层摘要会重新展开,物品/计划等不受影响。')) return;
     deleteSummary(r.id);
   }
@@ -550,7 +648,7 @@ function onDelete(r: SummaryRow) {
  * 叶子:可改「故事内时间」+ 正文;总结:只压文本,故只改正文。 */
 type Editing =
   | { kind: 'leaf'; msgIndex: number; text: string; timeStart: string; timeEnd: string }
-  | { kind: 'comp'; compId: string; level: number; text: string };
+  | { kind: 'comp'; compId: string; level: number; text: string; imported: boolean };
 const editing = ref<Editing | null>(null);
 
 function openEdit(r: SummaryRow) {
@@ -565,7 +663,7 @@ function openEdit(r: SummaryRow) {
       timeEnd: r.timeEnd ?? fb.end ?? '',
     };
   } else if (r.kind === 'comp') {
-    editing.value = { kind: 'comp', compId: r.id, level: r.level, text: r.text };
+    editing.value = { kind: 'comp', compId: r.id, level: r.level, text: r.text, imported: r.imported === true };
   }
 }
 function cancelEdit() {
@@ -685,6 +783,17 @@ provide(SUMMARY_CTX, {
           @click="exitSelectMode"
         >
           <Icon name="close" /><span class="bbs-btn-label">完成</span>
+        </button>
+        <button
+          v-if="!selectMode"
+          class="bbs-btn bbs-btn-sm"
+          type="button"
+          :disabled="engineState.running"
+          title="粘贴并导入使用柏宝书之前的旧总结"
+          @click="openImportHistory"
+        >
+          <Icon name="download" />
+          <span class="bbs-btn-label">导入旧总结</span>
         </button>
         <button
           v-if="!selectMode"
@@ -821,7 +930,7 @@ provide(SUMMARY_CTX, {
           <header class="bbs-summary-meta">
             <!-- 总结:层级标签 + 范围药丸 + 相对时间(留题首行)+ 绝对时间(窄屏换行) -->
             <template v-if="r.kind === 'comp'">
-              <span class="bbs-summary-badge">{{ levelLabel(r.level) }}</span>
+              <span class="bbs-summary-badge">{{ levelLabel(r.level, r.imported) }}</span>
               <span class="bbs-summary-loc">{{ floorLabel(r) }}</span>
               <span v-if="rowRelative(r)" class="bbs-summary-rel">({{ rowRelative(r) }})</span>
               <span v-if="rowTime(r)" class="bbs-summary-time">{{ rowTime(r) }}</span>
@@ -838,7 +947,7 @@ provide(SUMMARY_CTX, {
               <button
                 class="bbs-summary-act"
                 type="button"
-                :title="r.kind === 'comp' ? '编辑总结' : '编辑摘要'"
+                :title="r.imported ? '编辑导入历史' : r.kind === 'comp' ? '编辑总结' : '编辑摘要'"
                 @click="openEdit(r)"
               >
                 <Icon name="edit" />
@@ -846,7 +955,7 @@ provide(SUMMARY_CTX, {
               <button
                 class="bbs-summary-act bbs-summary-del"
                 type="button"
-                :title="r.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'"
+                :title="r.imported ? '删除导入历史' : r.kind === 'comp' ? '删除总结(下层会展开)' : '删除摘要'"
                 @click="onDelete(r)"
               >
                 <Icon name="trash" />
@@ -917,6 +1026,46 @@ provide(SUMMARY_CTX, {
       将把选中的 {{ selectionSummary.count }} 条摘要合并成一条 {{ levelLabel(selectionSummary.level) }}(无视自动总结阈值)。
       原摘要会被收纳进新总结、从列表收起(数据不删,可删掉新总结还原)。继续?
     </ConfirmDialog>
+
+    <!-- ===== 导入旧总结弹窗 ===== -->
+    <ModalMask :open="importHistoryOpen" @close="closeImportHistory">
+      <div class="bbs-modal" role="dialog" aria-modal="true" aria-label="导入旧总结">
+        <header class="bbs-modal-head">
+          <span class="bbs-modal-title">导入旧总结</span>
+          <button class="bbs-summary-act" type="button" title="关闭" @click="closeImportHistory"><Icon name="close" /></button>
+        </header>
+        <p class="bbs-field-hint bbs-import-note">
+          把使用柏宝书之前写在世界书等位置的剧情总结粘贴到这里。只导入叙事正文,不会自动生成物品、计划或角色状态。
+        </p>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">旧总结正文</span>
+          <textarea
+            v-model="importHistoryText"
+            class="bbs-input bbs-modal-textarea"
+            rows="10"
+            placeholder="粘贴按时间顺序整理好的旧剧情总结…"
+          ></textarea>
+        </label>
+        <label class="bbs-modal-field">
+          <span class="bbs-modal-label">覆盖截止楼层(含)</span>
+          <input
+            v-model.number="importHistoryFloor"
+            class="bbs-input"
+            type="number"
+            min="0"
+            :max="importHistoryMaxFloor"
+          />
+          <span class="bbs-field-hint">导入内容将代表 #0 - #{{ importHistoryFloor }}；这些楼层不再重复补摘。当前最后一个 AI 楼层为 #{{ importHistoryMaxFloor }}。</span>
+        </label>
+        <p class="bbs-field-hint bbs-import-warning">
+          导入后请停用世界书里的原总结条目,避免主模型同时收到两份重复内容。原世界书不会被本操作修改。
+        </p>
+        <footer class="bbs-modal-foot">
+          <button class="bbs-btn" type="button" @click="closeImportHistory">取消</button>
+          <button class="bbs-btn bbs-btn-primary" type="button" :disabled="!importHistoryText.trim()" @click="saveImportedHistory">导入</button>
+        </footer>
+      </div>
+    </ModalMask>
 
     <!-- ===== 添加计划 / 悬念弹窗 ===== -->
     <ModalMask :open="composerOpen" @close="closeComposer">
@@ -991,7 +1140,7 @@ provide(SUMMARY_CTX, {
       <div v-if="editing" class="bbs-modal" role="dialog" aria-modal="true" :aria-label="editing.kind === 'comp' ? '编辑总结' : '编辑摘要'">
         <header class="bbs-modal-head">
           <span class="bbs-modal-title">
-            {{ editing.kind === 'comp' ? `编辑${levelLabel(editing.level)}` : `编辑摘要 · 楼层 #${editing.msgIndex}` }}
+            {{ editing.kind === 'comp' ? `编辑${levelLabel(editing.level, editing.imported)}` : `编辑摘要 · 楼层 #${editing.msgIndex}` }}
           </span>
           <button class="bbs-summary-act" type="button" title="关闭" @click="cancelEdit"><Icon name="close" /></button>
         </header>
@@ -1007,7 +1156,7 @@ provide(SUMMARY_CTX, {
           </label>
         </div>
         <label class="bbs-modal-field">
-          <span class="bbs-modal-label">{{ editing.kind === 'comp' ? '总结正文' : '摘要正文' }}</span>
+          <span class="bbs-modal-label">{{ editing.kind === 'comp' ? (editing.imported ? '导入历史正文' : '总结正文') : '摘要正文' }}</span>
           <textarea v-model="editing.text" class="bbs-input bbs-modal-textarea" rows="8"></textarea>
         </label>
         <footer class="bbs-modal-foot">
@@ -1036,6 +1185,13 @@ provide(SUMMARY_CTX, {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+.bbs-import-note,
+.bbs-import-warning {
+  margin-bottom: 14px;
+}
+.bbs-import-warning {
+  color: var(--bbs-warning);
 }
 /* .bbs-section-head / .bbs-add-mini 已提升为 base.css 全局原子(摘要、场景共用) */
 

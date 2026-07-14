@@ -177,8 +177,11 @@ function buildHistoryNodeMap(
       timeLabel: summary.timeLabel,
       createdAt: summary.createdAt,
       childIds: summary.childIds ?? [],
-      msgIndex: -1,
-      active: false,
+      msgIndex: summary.imported ? (summary.importedFloorEnd ?? -1) : -1,
+      active: summary.imported === true,
+      atomic: summary.imported === true,
+      floorStart: summary.importedFloorStart,
+      floorEnd: summary.importedFloorEnd,
     });
   }
   return byId;
@@ -190,6 +193,11 @@ function nodeFloorRange(node: ViewNode, byId: Map<string, ViewNode>): [number | 
   const visit = (current: ViewNode): void => {
     if (seen.has(current.id)) return;
     seen.add(current.id);
+    if (current.atomic) {
+      if (typeof current.floorStart === 'number') floors.push(current.floorStart);
+      if (typeof current.floorEnd === 'number') floors.push(current.floorEnd);
+      return;
+    }
     if (current.kind === 'leaf') {
       floors.push(current.msgIndex);
       return;
