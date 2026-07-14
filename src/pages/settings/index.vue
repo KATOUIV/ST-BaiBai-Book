@@ -947,7 +947,12 @@ function exportPublicApiDocument() {
           <span class="bbs-field-label">二次总结</span>
           <input v-model.number="apiSettings.resummaryThreshold" class="bbs-input bbs-num" type="number" min="0" />
         </label>
-        <p class="bbs-field-hint">总结达到多少条后再次进行总结,0 为关闭二次总结。</p>
+        <p class="bbs-field-hint">L1 总结达到多少条后压成一条 L2,0 为关闭。默认 7。</p>
+        <label class="bbs-num-row">
+          <span class="bbs-field-label">高层总结</span>
+          <input v-model.number="apiSettings.higherResummaryThreshold" class="bbs-input bbs-num" type="number" min="0" />
+        </label>
+        <p class="bbs-field-hint">L2 及以上总结达到多少条后再压一层。高层正文更长,建议使用较小阈值；0 为关闭,默认 3。</p>
         <label class="bbs-num-row">
           <span class="bbs-field-label">附带近期已完成计划</span>
           <input v-model.number="apiSettings.recentResolvedPlansCount" class="bbs-input bbs-num" type="number" min="0" />

@@ -193,8 +193,10 @@ export interface ApiSettings {
    * `leafBatchThreshold` 条(不改总结质量),newest 的 N 条自然留下。
    * 0=保持旧行为(攒够即全压);默认 3。设太大 = 迟迟不压、叶子堆积。 */
   leafKeepRecent: number;
-  /** L1 及以上每积累到 N 条时,压成上一层总结(L≥1→L+1 阈值,0=关闭) */
+  /** L1 每积累到 N 条时,压成一条 L2 总结(L1→L2 阈值,0=关闭) */
   resummaryThreshold: number;
+  /** L2 及以上每积累到 N 条时,压成上一层总结(L≥2→L+1 阈值,0=关闭) */
+  higherResummaryThreshold: number;
   /** 状态快照里附带「近期已完成计划/悬念」的条数:**计划、悬念各取最近 N 条**(0=不附带)。
    *  防 AI 把刚了结的计划当未完成又去推进/重新 add;注入与副API摘要两端同口径附带。 */
   recentResolvedPlansCount: number;
@@ -290,6 +292,7 @@ function defaults(): ApiSettings {
     leafBatchThreshold: 12,
     leafKeepRecent: 3,
     resummaryThreshold: 7,
+    higherResummaryThreshold: 3,
     recentResolvedPlansCount: 5,
     summaryMaxRetries: 1,
     batchMaxChars: 30000,
@@ -379,6 +382,11 @@ function normalize(raw: unknown): ApiSettings {
   merged.leafKeepRecent =
     Number.isFinite(merged.leafKeepRecent) && merged.leafKeepRecent >= 0
       ? Math.floor(merged.leafKeepRecent)
+      : 3;
+  // 高层总结阈值:老配置没有该字段时补 3,避免 L2 继续按 7 条堆积成长文本
+  merged.higherResummaryThreshold =
+    Number.isFinite(merged.higherResummaryThreshold) && merged.higherResummaryThreshold >= 0
+      ? Math.floor(merged.higherResummaryThreshold)
       : 3;
   // 近期已完成计划条数:非负整数,缺失/非法回退默认 5(计划/悬念各取 N;0=不附带)
   merged.recentResolvedPlansCount =
@@ -517,6 +525,7 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.leafBatchThreshold = src.leafBatchThreshold;
   target.leafKeepRecent = src.leafKeepRecent;
   target.resummaryThreshold = src.resummaryThreshold;
+  target.higherResummaryThreshold = src.higherResummaryThreshold;
   target.recentResolvedPlansCount = src.recentResolvedPlansCount;
   target.summaryMaxRetries = src.summaryMaxRetries;
   target.batchMaxChars = src.batchMaxChars;

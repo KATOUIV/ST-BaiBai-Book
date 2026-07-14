@@ -1391,9 +1391,11 @@ export function coveredSet(chat: STMessage[]): Set<number> {
   return covered;
 }
 
-/** 某层级触发压缩所需的阈值:叶子层用 leafBatchThreshold,其余用 resummaryThreshold */
+/** 某层级触发压缩所需的阈值:L0→L1、L1→L2、L2+ 分开控制,避免高层长文本按 7 条堆积。 */
 function thresholdForLevel(level: number): number {
-  return level === 0 ? apiSettings.leafBatchThreshold : apiSettings.resummaryThreshold;
+  if (level === 0) return apiSettings.leafBatchThreshold;
+  if (level === 1) return apiSettings.resummaryThreshold;
+  return apiSettings.higherResummaryThreshold;
 }
 
 /**
@@ -1451,7 +1453,7 @@ function rootsAtLevel(level: number, chat: STMessage[]): RootView[] {
  * 可逆层级压缩(不删底层)。
  * 从最低层往上逐层检查:某层「未被收纳的根节点」攒够该层阈值时,
  * 用 AI 把这批的**叙事文本**融合成一条上层节点,childIds 收纳它们(底层全部保留)。
- * 一次调用会向上连锁(加叶子→可能生 L1→可能生 L2…),用同一套双阈值递归。
+ * 一次调用会向上连锁(加叶子→可能生 L1→可能生 L2…),按各层阈值递归。
  */
 export async function checkResummary(): Promise<number> {
   if (!engineActiveHere()) return 0;
