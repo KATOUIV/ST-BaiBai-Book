@@ -291,7 +291,7 @@ function defaults(): ApiSettings {
     renderWorldInfoTemplates: true,
     leafBatchThreshold: 12,
     leafKeepRecent: 3,
-    resummaryThreshold: 7,
+    resummaryThreshold: 6,
     higherResummaryThreshold: 3,
     recentResolvedPlansCount: 5,
     summaryMaxRetries: 1,

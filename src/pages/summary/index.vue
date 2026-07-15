@@ -5,7 +5,7 @@ import ModalMask from '@/components/ModalMask.vue';
 import { addSummary, appendOpToLatestLeaf, deleteLeafAt, deleteSummary, editLeafAt, editPlan, editSummary, invalidateSummaryAncestors } from '@/memory/apply';
 import { apiSettings } from '@/api/settings';
 import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, isAiFloor, resummarizeNow, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
-import { refreshInjection, selectViewNodes, type ViewNode } from '@/memory/inject';
+import { estimateInjectionTokenBreakdown, refreshInjection, selectViewNodes, type ViewNode } from '@/memory/inject';
 import { compactTimeLabel, formatRange, splitTimeLabel } from '@/memory/timeTag';
 import { relativeTimeLabel, weekdayLabel } from '@/memory/timeRel';
 import { derivedMeta, memory, recomputeDerived } from '@/memory/store';
@@ -225,6 +225,16 @@ let resummaryHintTimer: ReturnType<typeof setTimeout> | null = null;
 // 阈值关闭(<2)时不显示节奏句。
 const resummaryEvery = computed(() => (Math.max(0, apiSettings.keepRecent) + apiSettings.leafBatchThreshold + apiSettings.leafKeepRecent) * 2);
 const showCadence = computed(() => apiSettings.leafBatchThreshold >= 2);
+
+// 纯前端估算当前实际注入量。derivedMeta.rev 补上 chat/is_system 这类非 Vue 响应式数据的刷新信号。
+const injectionTokenEstimate = computed(() => {
+  void derivedMeta.rev;
+  const estimate = estimateInjectionTokenBreakdown();
+  return {
+    summary: estimate.summary.toLocaleString(),
+    other: estimate.other.toLocaleString(),
+  };
+});
 
 async function doResummarize() {
   if (resummaryRunning.value || engineState.running) return;
@@ -749,7 +759,13 @@ provide(SUMMARY_CTX, {
 
     <!-- ===== 摘要 ===== -->
     <div class="bbs-section-head">
-      <h2 class="bbs-title bbs-title-sub">摘要</h2>
+      <div class="bbs-summary-heading">
+        <h2 class="bbs-title bbs-title-sub">摘要</h2>
+        <div class="bbs-token-estimate" title="按 UTF-8 字节数估算,不会请求后端">
+          <span>摘要注入 ≈ {{ injectionTokenEstimate.summary }} tokens</span>
+          <span>其他注入 ≈ {{ injectionTokenEstimate.other }} tokens</span>
+        </div>
+      </div>
       <div class="bbs-summary-tools">
         <!-- 搜索:点放大镜展开搜索框(平时收起不占版面);已展开则收起并清空 -->
         <button
@@ -1610,6 +1626,18 @@ provide(SUMMARY_CTX, {
 }
 
 /* —— 摘要区工具行:标题右侧「选择 / 立即总结」并排 —— */
+.bbs-summary-heading {
+  min-width: 0;
+}
+.bbs-token-estimate {
+  margin: 3px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  color: var(--bbs-ink-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 .bbs-summary-tools {
   flex: 0 0 auto;
   display: inline-flex;

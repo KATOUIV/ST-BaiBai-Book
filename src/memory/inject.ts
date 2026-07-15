@@ -573,6 +573,29 @@ export function buildInjectionText(): string {
   return [buildHistoryInjectionText(), buildStateInjectionText()].filter(Boolean).join('\n\n').trim();
 }
 
+/** 按 ST 自身 tokenizer 不可用时的兜底口径估算文本 token 数。 */
+function estimateTextTokens(blocks: string[]): number {
+  const bytes = blocks.filter(Boolean).reduce((sum, text) => sum + new TextEncoder().encode(text).length, 0);
+  return Math.ceil(bytes / 3.35);
+}
+
+/**
+ * 估算当前实际会注入主对话的 token 数,拆成摘要与其他两类。
+ * “其他”包含当前结构化状态与时间标签提示词。
+ * 这里只用于给用户一个直观量级,不请求后端,也不计聊天模板包装带来的少量额外 token。
+ */
+export function estimateInjectionTokenBreakdown(): { summary: number; other: number } {
+  if (!engineActiveHere()) return { summary: 0, other: 0 };
+
+  return {
+    summary: estimateTextTokens([buildHistoryInjectionText()]),
+    other: estimateTextTokens([
+      buildStateInjectionText(),
+      apiSettings.autoSummaryEnabled ? timeTagPrompt() : '',
+    ]),
+  };
+}
+
 /** 把当前记忆刷新到 ST 的扩展提示槽。ST 未就绪/旧版无此 API 时静默跳过。 */
 export function refreshInjection(): void {
   // 引擎在此聊天不生效(总开关关 / 当前角色被排除):清掉已注入的槽。
