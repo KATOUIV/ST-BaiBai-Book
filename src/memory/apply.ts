@@ -4,7 +4,7 @@ import { fmtItemLogInline } from './prompts';
 import { memory, recomputeDerived, saveMemory, scheduleLeafFlush } from './store';
 import { readItemsTagText, writeItemLogTag, writeVarLogTag } from './timeTag';
 import { createEmptyMemory } from './types';
-import type { BaibaiMemory, ItemDelta, ItemLogEntry, JsonValue, LeafExtra, MemNpc, MemPlan, MemScene, MemSummary, NpcDelta, PlanResolveItem, ProtagonistDelta, SceneDelta, SceneReparent, StoredDelta, SummaryDelta, VarOp, VarTemplate, VarTier } from './types';
+import type { BaibaiMemory, ItemDelta, ItemLogEntry, JsonValue, LeafExtra, MemNpc, MemPlan, MemScene, MemSummary, NpcDelta, PlanResolveItem, ProtagonistDelta, SceneDelta, SceneOp, SceneReparent, StoredDelta, SummaryDelta, VarOp, VarTemplate, VarTier } from './types';
 
 let idSeq = 0;
 /** 生成稳定唯一 id(不依赖 random;时间走 nowMs 便于测试注入) */
@@ -139,6 +139,27 @@ function cleanSceneReparentList(v: unknown): SceneReparent[] {
   return arr(v).map(cleanSceneReparent).filter((x): x is SceneReparent => !!x);
 }
 
+function cleanSceneOp(raw: unknown): SceneOp | null {
+  if (!isRecord(raw)) return null;
+  if (raw.op === 'add' || raw.op === 'update') {
+    const entry = cleanSceneDelta(raw);
+    return entry ? { op: raw.op, ...entry } : null;
+  }
+  if (raw.op === 'reparent') {
+    const entry = cleanSceneReparent(raw);
+    return entry ? { op: 'reparent', ...entry } : null;
+  }
+  if (raw.op === 'remove') {
+    const path = cleanPath(raw.path);
+    return path.length ? { op: 'remove', path } : null;
+  }
+  return null;
+}
+
+function cleanSceneOpList(v: unknown): SceneOp[] {
+  return arr(v).map(cleanSceneOp).filter((x): x is SceneOp => !!x);
+}
+
 function cleanNpcDelta(raw: unknown): NpcDelta | null {
   if (!isRecord(raw)) {
     const name = scalarText(raw);
@@ -239,10 +260,12 @@ function cleanStoredDelta(raw: StoredDelta): StoredDelta {
     const update = cleanSceneList(raw.scenes.update);
     const reparent = cleanSceneReparentList(raw.scenes.reparent);
     const remove = arr(raw.scenes.remove).map(cleanPath).filter(p => p.length);
+    const ops = cleanSceneOpList(raw.scenes.ops);
     if (add.length) scenes.add = add;
     if (update.length) scenes.update = update;
     if (reparent.length) scenes.reparent = reparent;
     if (remove.length) scenes.remove = remove;
+    if (ops.length) scenes.ops = ops;
     if (Object.keys(scenes).length) out.scenes = scenes;
   }
 
@@ -711,29 +734,49 @@ function reparentScenePath(mem: BaibaiMemory, r: SceneReparent, t: number): void
     });
   }
 
-  // 平移子树:旧前缀 fromId → 新前缀 newId,旧路径 from → 新路径 to
+  // 平移子树:旧路径前缀 from → 新路径前缀 to。
+  // 历史版本会把同一叶子里的 add 全部排在 reparent 前执行：用户先改名、再在新名下添加子地点时，
+  // add 会提前隐式建出目标节点，旧实现随后又把源节点直接改成相同 id，制造两个同 id 的场景。
+  // 这里按目标 id 逐节点合并，既修复旧聊天的派生结果，也防止任何畸形 delta 再造重复 id。
   const childPrefix = `${fromId}/`;
-  const newParentId = to.length > 1 ? sceneId(to.slice(0, to.length - 1)) : '';
-  const newName = to[to.length - 1];
-  for (const s of mem.scenes) {
-    if (s.id === fromId) {
-      s.id = newId;
-      s.path = [...to];
-      s.name = newName;
-      s.parentId = newParentId;
-      // descs 若给了该节点新名的描述,顺带更新(支持「改父同时改描述」);否则保留原描述
-      const d = r.descs?.[newName]?.trim();
-      if (d) s.desc = d;
-      s.updatedAt = t;
-    } else if (s.id.startsWith(childPrefix)) {
-      // 后代:把路径前 from.length 段替换成 to,其余保留
-      const tail = s.path.slice(from.length);
-      s.path = [...to, ...tail];
-      s.id = sceneId(s.path);
-      s.parentId = sceneId(s.path.slice(0, s.path.length - 1));
-      s.updatedAt = t;
+  const moving = mem.scenes
+    .filter(s => s.id === fromId || s.id.startsWith(childPrefix))
+    .map(s => ({ scene: s, oldPath: [...s.path] }))
+    .sort((a, b) => a.oldPath.length - b.oldPath.length);
+  const movingSet = new Set(moving.map(x => x.scene));
+  const claimed = new Map<string, MemScene>();
+  const mergedAway = new Set<MemScene>();
+  const rootDesc = r.descs?.[to[to.length - 1]]?.trim();
+
+  for (const entry of moving) {
+    const tail = entry.oldPath.slice(from.length);
+    const targetPath = [...to, ...tail];
+    const targetId = sceneId(targetPath);
+    const existing = claimed.get(targetId)
+      ?? mem.scenes.find(s => !movingSet.has(s) && s.id === targetId);
+
+    if (existing) {
+      // 目标已有节点：合并而非再造同 id。显式改名描述优先；否则只用源描述补目标空值。
+      if (!tail.length && rootDesc) existing.desc = rootDesc;
+      else if (!existing.desc && entry.scene.desc) existing.desc = entry.scene.desc;
+      existing.createdAt = Math.min(existing.createdAt, entry.scene.createdAt);
+      existing.updatedAt = t;
+      claimed.set(targetId, existing);
+      mergedAway.add(entry.scene);
+      continue;
     }
+
+    const s = entry.scene;
+    s.id = targetId;
+    s.path = targetPath;
+    s.name = targetPath[targetPath.length - 1];
+    s.parentId = targetPath.length > 1 ? sceneId(targetPath.slice(0, -1)) : '';
+    if (!tail.length && rootDesc) s.desc = rootDesc;
+    s.updatedAt = t;
+    claimed.set(targetId, s);
   }
+
+  if (mergedAway.size) mem.scenes = mem.scenes.filter(s => !mergedAway.has(s));
 }
 
 /* ============ 自定义变量:JSON 树 + 路径命令(仿 MVU) ============ */
@@ -1061,13 +1104,19 @@ function applyStoredDeltaTo(mem: BaibaiMemory, d: StoredDelta, leaf: { id: strin
     }
   }
 
-  // 场景 / 地点。施加序:add → update → reparent → remove
-  // (reparent 在 add 之后,保证被引用节点已存在;remove 最后,避免移动刚被删的节点)。
+  // 场景 / 地点。旧的 AI/历史分桶保持 add → update → reparent → remove，确保向后兼容；
+  // 新版 UI 手动操作统一写入 ops，并在旧分桶之后严格按用户操作顺序重放。
   if (d.scenes) {
     for (const a of d.scenes.add ?? []) upsertScenePath(mem, a.path, a.desc, false, t);
     for (const u of d.scenes.update ?? []) upsertScenePath(mem, u.path, u.desc, true, t);
     for (const r of d.scenes.reparent ?? []) reparentScenePath(mem, r, t);
     for (const p of d.scenes.remove ?? []) removeScenePath(mem, p);
+    for (const op of d.scenes.ops ?? []) {
+      if (op.op === 'add') upsertScenePath(mem, op.path, op.desc, false, t);
+      else if (op.op === 'update') upsertScenePath(mem, op.path, op.desc, true, t);
+      else if (op.op === 'reparent') reparentScenePath(mem, op, t);
+      else removeScenePath(mem, op.path);
+    }
   }
 
   // NPC(指令型:add 新登场 / update 改身份位置 / remove 退场)。施加序:add → update → remove。
@@ -1520,6 +1569,7 @@ export function appendOpToLatestLeaf(op: StoredDelta): boolean {
     if (op.scenes.update?.length) (ds.update ??= []).push(...op.scenes.update);
     if (op.scenes.reparent?.length) (ds.reparent ??= []).push(...op.scenes.reparent);
     if (op.scenes.remove?.length) (ds.remove ??= []).push(...op.scenes.remove);
+    if (op.scenes.ops?.length) (ds.ops ??= []).push(...op.scenes.ops);
   }
   if (op.plans) {
     const dp = (d.plans ??= {});
@@ -1722,14 +1772,14 @@ export function removeNpc(name: string): boolean {
 export function upsertScene(path: string[], desc?: string): boolean {
   const clean = normScenePath(path);
   if (!clean.length) return false;
-  return appendOpToLatestLeaf({ scenes: { add: [{ path: clean, desc: desc?.trim() || undefined }] } });
+  return appendOpToLatestLeaf({ scenes: { ops: [{ op: 'add', path: clean, desc: desc?.trim() || undefined }] } });
 }
 
 /** 手动更新一个地点的描述(覆盖)。 */
 export function editSceneDesc(path: string[], desc: string): boolean {
   const clean = normScenePath(path);
   if (!clean.length) return false;
-  return appendOpToLatestLeaf({ scenes: { update: [{ path: clean, desc: desc.trim() || undefined }] } });
+  return appendOpToLatestLeaf({ scenes: { ops: [{ op: 'update', path: clean, desc: desc.trim() || undefined }] } });
 }
 
 /**
@@ -1746,7 +1796,7 @@ export function renameScene(oldPath: string[], newName: string, desc?: string): 
   }
   const newPath = [...clean.slice(0, -1), nm];
   const descs = desc?.trim() ? { [nm]: desc.trim() } : undefined;
-  return appendOpToLatestLeaf({ scenes: { reparent: [{ node: clean, newPath, descs }] } });
+  return appendOpToLatestLeaf({ scenes: { ops: [{ op: 'reparent', node: clean, newPath, descs }] } });
 }
 
 /**
@@ -1760,14 +1810,14 @@ export function reparentScene(nodePath: string[], newPath: string[], descs?: Rec
   const to = normScenePath(newPath);
   if (!node.length || !to.length) return false;
   if (sceneId(to) === sceneId(node)) return false; // 路径没变
-  return appendOpToLatestLeaf({ scenes: { reparent: [{ node, newPath: to, descs }] } });
+  return appendOpToLatestLeaf({ scenes: { ops: [{ op: 'reparent', node, newPath: to, descs }] } });
 }
 
 /** 手动删除一个地点(连带其后代)。 */
 export function removeScene(path: string[]): boolean {
   const clean = normScenePath(path);
   if (!clean.length) return false;
-  return appendOpToLatestLeaf({ scenes: { remove: [clean] } });
+  return appendOpToLatestLeaf({ scenes: { ops: [{ op: 'remove', path: clean }] } });
 }
 
 /** 删除某条消息上的叶子(清 extra),然后级联删坏链 + 重算 + 落盘 */
@@ -1925,6 +1975,76 @@ export function deleteSummary(id: string): boolean {
   memory.summaries.splice(idx, 1);
   saveMemory();
   return true;
+}
+
+export interface DeleteSummarySubtreesResult {
+  /** 实际删除的逐楼叶子摘要数。 */
+  leaves: number;
+  /** 实际删除的总结节点数(含因子节点消失而一并失效的祖先)。 */
+  summaries: number;
+  /** 被删除的导入历史数;大于 0 时调用方需同步正文隐藏状态。 */
+  imported: number;
+}
+
+/**
+ * 批量删除若干森林子树。
+ *
+ * 摘要页的多选只展示「代表一段历史的根节点」；若根是总结，仅删根本身会把下层摘要
+ * 重新展开，无法实现「全选 → 一次清空」。因此批量删除把每个选中节点及其全部后代
+ * 视作一个删除范围：压缩节点从 metadata 移除，叶子从对应消息 extra 移除。
+ *
+ * 与 deleteLeafAt 一样，删叶子后会按剩余叶子重算结构化状态、清理失效祖先并防抖落盘。
+ */
+export function deleteSummarySubtrees(rootIds: string[]): DeleteSummarySubtreesResult {
+  const roots = new Set(rootIds.filter(Boolean));
+  if (!roots.size) return { leaves: 0, summaries: 0, imported: 0 };
+
+  const summariesById = new Map(memory.summaries.map(summary => [summary.id, summary]));
+  const summaryIds = new Set<string>();
+  const leafIds = new Set<string>();
+  const visited = new Set<string>();
+  let imported = 0;
+
+  const collect = (id: string): void => {
+    if (visited.has(id)) return;
+    visited.add(id);
+    const summary = summariesById.get(id);
+    if (!summary) {
+      leafIds.add(id);
+      return;
+    }
+    summaryIds.add(id);
+    if (summary.imported) {
+      imported++;
+      return;
+    }
+    for (const childId of summary.childIds) collect(childId);
+  };
+  for (const id of roots) collect(id);
+
+  const chat = getContext()?.chat;
+  let leaves = 0;
+  if (chat && leafIds.size) {
+    for (const message of chat) {
+      const leaf = getLeaf(message);
+      if (!leaf || !leafIds.has(leaf.id)) continue;
+      delete (message.extra as Record<string, unknown>).bbs_leaf;
+      leaves++;
+    }
+  }
+
+  const summariesBefore = memory.summaries.length;
+  if (summaryIds.size) {
+    memory.summaries = memory.summaries.filter(summary => !summaryIds.has(summary.id));
+  }
+  if (leaves > 0) recomputeDerived();
+  // 选中的节点通常是根；这里仍清理潜在失效祖先，兼容视图因坏链降级后选到子节点的情况。
+  pruneBrokenComps();
+  const summaries = summariesBefore - memory.summaries.length;
+
+  if (summaries > 0) saveMemory();
+  if (leaves > 0) scheduleLeafFlush();
+  return { leaves, summaries, imported };
 }
 
 /**

@@ -4,5 +4,6 @@ node_modules/
 .preview/
 .preview/shot-*.png
 .claude
+.codex/
 CLAUDE.md
 .pnpm-store/

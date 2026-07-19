@@ -2,7 +2,7 @@
 import Icon from '@/components/Icon.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import ModalMask from '@/components/ModalMask.vue';
-import { addSummary, appendOpToLatestLeaf, deleteLeafAt, deleteSummary, editLeafAt, editPlan, editSummary, invalidateSummaryAncestors } from '@/memory/apply';
+import { addSummary, appendOpToLatestLeaf, deleteLeafAt, deleteSummary, deleteSummarySubtrees, editLeafAt, editPlan, editSummary, invalidateSummaryAncestors } from '@/memory/apply';
 import { apiSettings } from '@/api/settings';
 import { batchBackfill, batchState, cancelBatchBackfill, engineState, floorBackfillState, isAiFloor, resummarizeNow, summarizeFloor, summarizeSelected, syncHiddenNow } from '@/memory/engine';
 import { estimateInjectionTokenBreakdown, refreshInjection, selectViewNodes, type ViewNode } from '@/memory/inject';
@@ -606,6 +606,58 @@ async function runMerge() {
   }
 }
 
+/** 删除统计按整棵选中子树计算:选中总结时,其收纳的下层摘要也属于删除范围。 */
+const selectionDeleteSummary = computed(() => {
+  const map = byId.value;
+  const visited = new Set<string>();
+  let leaves = 0, summaries = 0, imported = 0;
+  const walk = (id: string): void => {
+    if (visited.has(id)) return;
+    visited.add(id);
+    const node = map.get(id);
+    if (!node) return;
+    if (node.kind === 'leaf') {
+      leaves++;
+      return;
+    }
+    summaries++;
+    if (node.atomic) {
+      imported++;
+      return;
+    }
+    for (const childId of node.childIds) walk(childId);
+  };
+  for (const id of selectedIds.value) walk(id);
+  return { leaves, summaries, imported };
+});
+
+const deleteConfirmOpen = ref(false);
+const deleting = ref(false);
+function openDeleteConfirm() {
+  if (!selectionSummary.value.count || deleting.value || merging.value || engineState.running) return;
+  deleteConfirmOpen.value = true;
+}
+async function runDeleteSelected() {
+  deleteConfirmOpen.value = false;
+  if (!selectionSummary.value.count || deleting.value) return;
+  // 先快照 id：删除第一棵子树后根序列会立即变化，不能再从响应式列表逐项读取。
+  const ids = [...selectedIds.value];
+  deleting.value = true;
+  try {
+    const result = deleteSummarySubtrees(ids);
+    refreshInjection();
+    if (result.imported > 0) await syncHiddenNow(true);
+    exitSelectMode();
+    const parts = [
+      result.leaves ? `${result.leaves} 条摘要` : '',
+      result.summaries ? `${result.summaries} 条总结` : '',
+    ].filter(Boolean);
+    toast(parts.length ? `已删除${parts.join('、')}` : '所选内容已不存在', parts.length ? 'success' : 'warning');
+  } finally {
+    deleting.value = false;
+  }
+}
+
 /** 行的展示时间:新数据用 timeStart/timeEnd 合成并压缩;旧数据回退到已固化的 timeLabel(也压缩一次) */
 function rowTime(r: SummaryRow): string {
   if (r.timeStart || r.timeEnd) return formatRange(r.timeStart, r.timeEnd);
@@ -997,7 +1049,7 @@ provide(SUMMARY_CTX, {
       <p>还没有摘要。对话累积到设定楼层后会自动生成,也可在「未摘要楼层」里点楼层号单独补摘。</p>
     </div>
 
-    <!-- 选择模式底部操作条:显示已选统计 + 全选/合并。sticky 在页面底部 -->
+    <!-- 选择模式底部操作条:显示已选统计 + 全选/删除/合并。sticky 在页面底部 -->
     <div v-if="selectMode" class="bbs-select-bar">
       <span class="bbs-select-info">
         <template v-if="selectionSummary.count">
@@ -1014,16 +1066,27 @@ provide(SUMMARY_CTX, {
       <button
         class="bbs-btn bbs-btn-sm"
         type="button"
-        :disabled="!rootNodes.length"
+        :disabled="!rootNodes.length || deleting"
         :title="allSelected ? '取消全选' : '全选全部根摘要'"
         @click="toggleSelectAll"
       >
         {{ allSelected ? '取消全选' : '全选' }}
       </button>
       <button
+        class="bbs-btn bbs-btn-sm bbs-btn-danger"
+        type="button"
+        :disabled="!selectionSummary.count || deleting || merging || engineState.running"
+        title="删除所选条目及其收纳的下层摘要"
+        @click="openDeleteConfirm"
+      >
+        <span v-if="deleting" class="bbs-pending-spin"></span>
+        <Icon v-else name="trash" />
+        删除所选
+      </button>
+      <button
         class="bbs-btn bbs-btn-sm bbs-btn-primary"
         type="button"
-        :disabled="!canMerge || merging || engineState.running"
+        :disabled="!canMerge || merging || deleting || engineState.running"
         @click="openMergeConfirm"
       >
         <span v-if="merging" class="bbs-pending-spin"></span>
@@ -1041,6 +1104,22 @@ provide(SUMMARY_CTX, {
     >
       将把选中的 {{ selectionSummary.count }} 条摘要合并成一条 {{ levelLabel(selectionSummary.level) }}(无视自动总结阈值)。
       原摘要会被收纳进新总结、从列表收起(数据不删,可删掉新总结还原)。继续?
+    </ConfirmDialog>
+
+    <!-- 批量删除确认:选中总结代表整段历史,会连同其收纳的下层节点永久删除。 -->
+    <ConfirmDialog
+      v-model:open="deleteConfirmOpen"
+      :title="allSelected ? '清空全部摘要' : '删除所选摘要'"
+      confirmText="删除"
+      confirmIcon="trash"
+      tone="danger"
+      @confirm="runDeleteSelected"
+    >
+      将永久删除所选 {{ selectionSummary.count }} 个条目所代表的全部内容
+      ({{ selectionDeleteSummary.leaves }} 条逐楼摘要、{{ selectionDeleteSummary.summaries }} 条总结)。
+      选中的总结所收纳的下层摘要也会一并删除；逐楼摘要带来的物品、计划、时间地点等状态会按剩余摘要重新计算，原文楼层仍保持隐藏。
+      <template v-if="selectionDeleteSummary.imported">导入历史覆盖的原文楼层会重新显示。</template>
+      此操作无法撤销，继续?
     </ConfirmDialog>
 
     <!-- ===== 导入旧总结弹窗 ===== -->
@@ -1793,6 +1872,15 @@ provide(SUMMARY_CTX, {
 .bbs-select-bar .bbs-pending-spin {
   width: 12px;
   height: 12px;
+}
+.bbs-select-bar .bbs-btn-danger {
+  color: var(--bbs-danger);
+  border-color: var(--bbs-line-strong);
+}
+.bbs-select-bar .bbs-btn-danger:hover:not(:disabled) {
+  color: var(--bbs-danger);
+  border-color: var(--bbs-danger);
+  background: var(--bbs-danger-soft);
 }
 
 .bbs-empty {

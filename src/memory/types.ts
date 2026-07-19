@@ -446,6 +446,18 @@ export interface SceneReparent {
   descs?: Record<string, string>;
 }
 
+/**
+ * 手动场景操作的有序日志。
+ *
+ * AI 摘要仍使用 scenes.add/update/reparent 的分桶协议；UI 后续编辑则写进 ops，
+ * 避免多次操作合并到同一叶子后被固定的 add→update→reparent→remove 顺序打乱。
+ */
+export type SceneOp =
+  | { op: 'add'; path: string[]; desc?: string }
+  | { op: 'update'; path: string[]; desc?: string }
+  | { op: 'reparent'; node: string[]; newPath: string[]; descs?: Record<string, string> }
+  | { op: 'remove'; path: string[] };
+
 /** AI 摘要返回的完整 JSON(协议保持不变:AI 只产 add/update/remove/resolve) */
 export interface SummaryDelta {
   /** 本楼层叙事摘要正文 */
@@ -531,6 +543,8 @@ export interface StoredDelta {
     reparent?: SceneReparent[];
     /** 内部/手动:按完整路径移除(连带删其后代) */
     remove?: string[][];
+    /** 内部/手动:严格按用户操作先后重放；旧的分桶字段继续兼容历史聊天。 */
+    ops?: SceneOp[];
   };
   npcs?: {
     add?: NpcDelta[];

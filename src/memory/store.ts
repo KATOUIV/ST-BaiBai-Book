@@ -255,6 +255,7 @@ function mergeStoredDelta(a: StoredDelta, b: StoredDelta): void {
     if (b.scenes.update?.length) (as.update ??= []).push(...b.scenes.update);
     if (b.scenes.reparent?.length) (as.reparent ??= []).push(...b.scenes.reparent);
     if (b.scenes.remove?.length) (as.remove ??= []).push(...b.scenes.remove);
+    if (b.scenes.ops?.length) (as.ops ??= []).push(...b.scenes.ops);
   }
   if (b.plans) {
     const ap = (a.plans ??= {});

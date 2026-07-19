@@ -73,6 +73,7 @@ function deltaHasData(delta: StoredDelta): boolean {
     delta.scenes?.update?.length ||
     delta.scenes?.reparent?.length ||
     delta.scenes?.remove?.length ||
+    delta.scenes?.ops?.length ||
     delta.npcs?.add?.length ||
     delta.npcs?.update?.length ||
     delta.npcs?.remove?.length ||

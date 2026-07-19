@@ -3,7 +3,7 @@ import Icon from '@/components/Icon.vue';
 import ConfirmDialog from '@/components/ConfirmDialog.vue';
 import ModalMask from '@/components/ModalMask.vue';
 import SummaryOnlyNotice from '@/components/SummaryOnlyNotice.vue';
-import { buildSceneLocationIndex, editSceneDesc, findCurrentSceneId, removeScene, reparentScene, resolveSceneLocationId, upsertScene } from '@/memory/apply';
+import { buildSceneLocationIndex, editSceneDesc, findCurrentSceneId, removeScene, reparentScene, resolveSceneLocationId, sceneId, upsertScene } from '@/memory/apply';
 import { buildTravelDraft } from '@/memory/inject';
 import { derivedMeta, memory } from '@/memory/store';
 import { closeBook } from '@/state/ui';
@@ -196,7 +196,14 @@ function addScene() {
   if (!name || !newDesc.value.trim()) return;
   const parent = memory.scenes.find(s => s.id === newParentId.value);
   const path = parent ? [...parent.path, name] : [name];
-  if (!upsertScene(path, newDesc.value)) return;
+  if (memory.scenes.some(s => s.id === sceneId(path))) {
+    toast(`地点「${path.join(' › ')}」已经存在，请直接编辑原地点。`, 'warning');
+    return;
+  }
+  if (!upsertScene(path, newDesc.value)) {
+    toast('无法保存地点，请确认当前聊天已有有效摘要。', 'error');
+    return;
+  }
   composerOpen.value = false;
 }
 
@@ -237,13 +244,22 @@ function saveEdit() {
   if (!e || !name || !e.desc.trim()) return; // 描述必填
   const parent = memory.scenes.find(s => s.id === e.parentId);
   const newPath = parent ? [...parent.path, name] : [name];
-  const pathChanged = newPath.join('/') !== e.path.join('/');
+  const pathChanged = sceneId(newPath) !== sceneId(e.path);
 
+  let saved = false;
   if (pathChanged) {
+    if (memory.scenes.some(s => s.id === sceneId(newPath))) {
+      toast(`地点「${newPath.join(' › ')}」已经存在，不能覆盖或合并。`, 'warning');
+      return;
+    }
     // 换父 / 改名 / 插层:一条 reparent 原子完成,连子树平移 + 顺带写新名描述
-    reparentScene(e.path, newPath, { [name]: e.desc.trim() });
+    saved = reparentScene(e.path, newPath, { [name]: e.desc.trim() });
   } else {
-    editSceneDesc(e.path, e.desc);
+    saved = editSceneDesc(e.path, e.desc);
+  }
+  if (!saved) {
+    toast('无法保存地点，请确认当前聊天已有有效摘要。', 'error');
+    return;
   }
   editing.value = null;
 }
