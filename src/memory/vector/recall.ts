@@ -26,6 +26,7 @@ import { currentBundleHashes, currentChatId, currentChatScope, currentVectorDb, 
 import { isAiFloor, resolveKeepStart } from '../engine';
 import { cleanBody, compactTimeLabel, latestStoryTime, splitTimeLabel } from '../timeTag';
 import { relativeTimeLabel } from '../timeRel';
+import { normalizeRecallInjectionDepth } from './depth';
 import {
   previewOf,
   resetRecallDebug,
@@ -44,7 +45,11 @@ import {
 const RECALL_INJECT_KEY = 'baibai_book_vector_recall';
 const IN_CHAT = 1;
 const ROLE_SYSTEM = 0;
-const RECALL_INJECT_DEPTH = 0; // D0:贴最底(紧邻用户最新输入),让召回的相关回忆离当前语境最近
+
+/** 当前召回注入深度;运行时再归一化,兼容用户正在编辑输入框时产生的临时非法值。 */
+function recallInjectionDepth(): number {
+  return normalizeRecallInjectionDepth(apiSettings.vector.recall.injectionDepth);
+}
 
 /**
  * 命中来源标记:
@@ -142,7 +147,10 @@ function saveRecallCache(cache: RecallCache): void {
   }
 }
 
-/** 召回参数指纹:覆盖全部影响最终注入文本的档位参数(注入深度是常量,不计)。 */
+/**
+ * 召回参数指纹:覆盖全部影响最终注入文本的档位参数。
+ * 注入深度只改变同一文本的位置,不改变检索结果,故不计入并可直接复用缓存。
+ */
 function recallParamFingerprint(cfg: typeof apiSettings.vector.recall): string {
   return [
     cfg.rerankCandidates,
@@ -203,7 +211,7 @@ export function shouldRecallForType(type: string | undefined): boolean {
 
 /** 清空召回注入槽(降级/未命中/切聊天时)。 */
 export function clearRecallInjection(): void {
-  getContext()?.setExtensionPrompt?.(RECALL_INJECT_KEY, '', IN_CHAT, RECALL_INJECT_DEPTH, false, ROLE_SYSTEM, null);
+  getContext()?.setExtensionPrompt?.(RECALL_INJECT_KEY, '', IN_CHAT, recallInjectionDepth(), false, ROLE_SYSTEM, null);
 }
 
 /**
@@ -238,7 +246,7 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
   const cacheKey = buildRecallCacheKey(chat, cfg);
   const cached = cacheKey ? loadRecallCache() : null;
   if (cacheKey && cached && cached.key === cacheKey) {
-    fn(RECALL_INJECT_KEY, cached.text, IN_CHAT, RECALL_INJECT_DEPTH, false, ROLE_SYSTEM, null);
+    fn(RECALL_INJECT_KEY, cached.text, IN_CHAT, recallInjectionDepth(), false, ROLE_SYSTEM, null);
     restoreRecallDebug(cached.debug);
     setRecallStatus(`${cached.debug.status}(复用缓存)`);
     return;
@@ -292,7 +300,7 @@ export async function runVectorRecall(signal?: AbortSignal): Promise<void> {
     const now = latestStoryTime(chat);
     const { text, tiers } = buildRecallText(ranked, cfg, selfScope, now);
     recordRerankDebug(ranked, tiers, selfScope);
-    fn(RECALL_INJECT_KEY, text, IN_CHAT, RECALL_INJECT_DEPTH, false, ROLE_SYSTEM, null);
+    fn(RECALL_INJECT_KEY, text, IN_CHAT, recallInjectionDepth(), false, ROLE_SYSTEM, null);
     setRecallInjected(text);
     setRecallStatus(text ? '召回完成' : '召回完成:无内容达标,本回合未注入');
     // 实算成功才落缓存(失败/降级路径不缓存,下次重试)。存调试快照供命中时还原面板。

@@ -30,6 +30,15 @@ interface StoryDate {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
 
+/**
+ * 带「年月日」单位的日期字段之间允许出现的装饰分隔符。
+ *
+ * AI 常把纪年写成「元会历·3728年·2月1日」或「2024年／9月／30日」。
+ * 这里只允许空白和常见点号、斜线、逗号、横线，且必须位于明确的 年→月 / 月→日
+ * 单位边界，不做全局替换，避免误伤历法前缀和架空月名。
+ */
+const DATE_FIELD_SEPARATOR = '[\\s·・•‧∙⋅.．。﹒/／,，、_\\-—–－]*';
+
 /** 把全角/中文句点等日期分隔符规范成 /,便于后续正则统一处理 */
 function normalizeNumericDateSeparators(dateStr: string): string {
   if (!dateStr) return dateStr;
@@ -46,8 +55,10 @@ function looksLikeStructuredNumericDate(dateStr: string): boolean {
   if (!dateStr) return false;
   return (
     /^(?:\d{4,}[/.\-．。﹒]\d{1,2}[/.\-．。﹒]\d{1,2}|\d{1,2}[/.\-．。﹒]\d{1,2})(?=$|\s)/.test(dateStr) ||
-    /^\d+\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日?(?=$|\s)/.test(dateStr) ||
-    /^\d{1,2}\s*月\s*\d{1,2}\s*日?(?=$|\s)/.test(dateStr)
+    new RegExp(
+      `^\\d+\\s*年${DATE_FIELD_SEPARATOR}\\d{1,2}\\s*月${DATE_FIELD_SEPARATOR}\\d{1,2}\\s*日?(?=$|\\s)`,
+    ).test(dateStr) ||
+    new RegExp(`^\\d{1,2}\\s*月${DATE_FIELD_SEPARATOR}\\d{1,2}\\s*日?(?=$|\\s)`).test(dateStr)
   );
 }
 
@@ -143,7 +154,9 @@ export function parseStoryDate(dateStr: string): StoryDate | null {
   const DAY = `(?:初)?${NUM}`;
 
   // 标准:X年M月D日(年/月/日均可中文,带可选历法前缀,如「元持十二年八月二十一日」「永和十五年八月初七」)
-  const yearCn = s.match(new RegExp(`(${NUM})年\\s*(${NUM})月\\s*(${DAY})日?`));
+  const yearCn = s.match(
+    new RegExp(`(${NUM})\\s*年${DATE_FIELD_SEPARATOR}(${NUM})\\s*月${DATE_FIELD_SEPARATOR}(${DAY})\\s*日?`),
+  );
   if (yearCn) {
     const year = cnNumToInt(yearCn[1]);
     const month = cnNumToInt(yearCn[2]);
@@ -155,8 +168,13 @@ export function parseStoryDate(dateStr: string): StoryDate | null {
     }
   }
 
+  // 明确写了年份却没能完整解析时，禁止继续降级成无年份的 M月D日。
+  // 否则「3727年★9月30日」会静默丢掉 3727，再与另一个无年份日期按同一年比较，
+  // 跨年方向就可能完全颠倒。此处宁可不标相对时间，也不基于残缺日期猜算。
+  if (new RegExp(`(?:${NUM})\\s*年`).test(s)) return null;
+
   // 标准:M月D日(月/日可中文,日可带「初」)
-  const cn = s.match(new RegExp(`(${NUM})月\\s*(${DAY})日?`));
+  const cn = s.match(new RegExp(`(${NUM})\\s*月${DATE_FIELD_SEPARATOR}(${DAY})\\s*日?`));
   if (cn) {
     const month = cnNumToInt(cn[1]);
     const day = cnNumToInt(cn[2]);

@@ -1,6 +1,7 @@
 import { getContext } from '@/st/context';
 import { normalizeTemplate, type VarTemplate } from '@/memory/types';
 import { reactive, watch } from 'vue';
+import { DEFAULT_RECALL_INJECTION_DEPTH, normalizeRecallInjectionDepth } from '@/memory/vector/depth';
 
 /**
  * 副 API 设置(全局,跨聊天)。存进 ST 的 extension_settings(→ 服务器 settings.json),
@@ -80,6 +81,8 @@ export interface VectorEndpoint {
  *  ③ 最终召回条数 ≤ finalRecallCount(上限):先放全文档,不足再用摘要档补,补不满也无妨。
  */
 export interface VectorRecallSettings {
+  /** 召回内容注入深度:D0 最贴近最新输入,数字越大越靠前。 */
+  injectionDepth: number;
   /** 进入 rerank 的候选数:纯按 embedding 相似度取 top-N(不套阈值过滤) */
   rerankCandidates: number;
   /** embedding 相似度阈值:仅用于 ② 摘要档准入门槛(低于此连摘要都不召回);不影响 ① 取候选 */
@@ -269,6 +272,7 @@ function defaults(): ApiSettings {
       queryRewriteJailbreak: false,
       queryRewriteMaxTokens: 8192,
       recall: {
+        injectionDepth: DEFAULT_RECALL_INJECTION_DEPTH,
         rerankCandidates: 20,
         embeddingThreshold: 0.8,
         rerankThreshold: 0.9,
@@ -361,6 +365,8 @@ function normalize(raw: unknown): ApiSettings {
     queryRewrite: normalizeVectorEndpoint(rv.queryRewrite, d.vector.queryRewrite),
     recall: { ...d.vector.recall, ...(rv.recall ?? {}) },
   };
+  // 召回注入深度:非负整数;老配置缺失、非法或输入框暂时为空时回退 D0。
+  merged.vector.recall.injectionDepth = normalizeRecallInjectionDepth(merged.vector.recall.injectionDepth);
   // 召回起始 AI 楼数:非负整数,缺失/非法回退 0(不限制)
   merged.vector.recall.minAiFloors =
     Number.isFinite(merged.vector.recall.minAiFloors) && merged.vector.recall.minAiFloors >= 0

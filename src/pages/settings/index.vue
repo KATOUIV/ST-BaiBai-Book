@@ -1293,6 +1293,19 @@ function exportPublicApiDocument() {
             </p>
 
           <label class="bbs-num-row">
+            <span class="bbs-field-label">召回注入深度</span>
+            <input
+              v-model.number="apiSettings.vector.recall.injectionDepth"
+              class="bbs-input bbs-num"
+              type="number"
+              min="0"
+              step="1"
+              :disabled="!apiSettings.vector.enabled"
+            />
+          </label>
+          <p class="bbs-field-hint">召回内容注入到聊天中的深度。0 = D0,最贴近最新用户输入;数字越大越靠前。</p>
+
+          <label class="bbs-num-row">
             <span class="bbs-field-label">Rerank 候选数</span>
             <input
               v-model.number="apiSettings.vector.recall.rerankCandidates"
