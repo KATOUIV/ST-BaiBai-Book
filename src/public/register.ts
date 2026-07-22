@@ -37,6 +37,7 @@ export const PUBLIC_CHANGED_EVENT = 'st-baibai-book:changed';
 
 const capabilities: PublicCapabilities = {
   globalApi: true,
+  sharedApiChannels: true,
   slashCommand: false,
   macros: false,
   parameterizedMacros: false,

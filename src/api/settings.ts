@@ -223,6 +223,15 @@ export interface ApiSettings {
 
 // extension_settings 里的命名空间键;localStorage 是旧版残留,仅用于一次性迁移。
 const SETTINGS_KEY = 'baibai_book';
+const SHARED_CHANNELS_KEY = 'baibai_api_channels';
+const SHARED_CHANNELS_EVENT = 'st-baibai-api-channels:changed';
+const SHARED_CHANNELS_SCHEMA_VERSION = 1;
+
+interface SharedChannelsStore {
+  schemaVersion: number;
+  revision: number;
+  channels: ApiChannel[];
+}
 
 /** 条目名过滤的内置默认规则:首次载入时「播种」进用户列表(见 hydrateSettings),之后用户可自由增删。
  *  \[mvu…\] = 过滤变量框架 MVU 的机制条目(对剧情摘要是纯噪音)。大小写不敏感(engine 编译带 i)。 */
@@ -503,6 +512,9 @@ export const apiSettings = reactive<ApiSettings>(defaults());
 
 // 守门标志:hydrate 完成前不回写,避免「默认值」覆盖服务器上已存的设置。
 let ready = false;
+let sharedChannelsFingerprint = '';
+let sharedChannelsRevision = 0;
+let sharedChannelsListenerBound = false;
 
 // hydrate 完成后要通知的订阅者(如 ui.ts:settings 就绪后才能拿到同步过来的主题/导航位置)。
 // 若订阅时已就绪则立刻回调,避免错过时序。
@@ -541,11 +553,92 @@ function applyInto(target: ApiSettings, src: ApiSettings): void {
   target.varsTemplateByChar = src.varsTemplateByChar;
 }
 
+function channelFingerprint(channels: ApiChannel[]): string {
+  return JSON.stringify(channels);
+}
+
+function readSharedChannels(raw: unknown): SharedChannelsStore | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const store = raw as Partial<SharedChannelsStore>;
+  if (!Array.isArray(store.channels)) return null;
+  return {
+    schemaVersion: SHARED_CHANNELS_SCHEMA_VERSION,
+    revision:
+      typeof store.revision === 'number' && Number.isFinite(store.revision)
+        ? Math.max(0, Math.floor(store.revision))
+        : 0,
+    channels: store.channels.map(normalizeChannel),
+  };
+}
+
+function writeSharedChannels(dispatch = true): void {
+  const ctx = getContext();
+  if (!ctx?.extensionSettings) return;
+  sharedChannelsRevision += 1;
+  const store: SharedChannelsStore = {
+    schemaVersion: SHARED_CHANNELS_SCHEMA_VERSION,
+    revision: sharedChannelsRevision,
+    channels: JSON.parse(JSON.stringify(apiSettings.channels)) as ApiChannel[],
+  };
+  ctx.extensionSettings[SHARED_CHANNELS_KEY] = store;
+  sharedChannelsFingerprint = channelFingerprint(store.channels);
+  ctx.saveSettingsDebounced?.();
+  if (dispatch) {
+    window.dispatchEvent(
+      new CustomEvent(SHARED_CHANNELS_EVENT, {
+        detail: { revision: store.revision, source: 'ST-BaiBai-Book' },
+      }),
+    );
+  }
+}
+
+function applySharedChannels(store: SharedChannelsStore): void {
+  const fingerprint = channelFingerprint(store.channels);
+  sharedChannelsRevision = Math.max(sharedChannelsRevision, store.revision);
+  if (fingerprint === sharedChannelsFingerprint) return;
+  apiSettings.channels = store.channels;
+  sharedChannelsFingerprint = fingerprint;
+
+  const ids = new Set(apiSettings.channels.map(channel => channel.id));
+  if (apiSettings.assignments.summary && !ids.has(apiSettings.assignments.summary)) {
+    apiSettings.assignments.summary = '';
+  }
+  if (apiSettings.assignments.resummary && !ids.has(apiSettings.assignments.resummary)) {
+    apiSettings.assignments.resummary = '';
+  }
+}
+
+function bindSharedChannelsListener(): void {
+  if (sharedChannelsListenerBound) return;
+  sharedChannelsListenerBound = true;
+  window.addEventListener(SHARED_CHANNELS_EVENT, () => {
+    const ctx = getContext();
+    const store = readSharedChannels(ctx?.extensionSettings?.[SHARED_CHANNELS_KEY]);
+    if (store) applySharedChannels(store);
+  });
+}
+
+function hydrateSharedChannels(legacyChannels: ApiChannel[]): void {
+  const ctx = getContext();
+  if (!ctx?.extensionSettings) return;
+  const stored = readSharedChannels(ctx.extensionSettings[SHARED_CHANNELS_KEY]);
+  if (stored) {
+    applySharedChannels(stored);
+  } else {
+    apiSettings.channels = legacyChannels.map(normalizeChannel);
+    sharedChannelsFingerprint = channelFingerprint(apiSettings.channels);
+    writeSharedChannels(false);
+  }
+  bindSharedChannelsListener();
+}
+
 /** 写回 extension_settings 并防抖落盘到服务器(跨设备同步的关键)。 */
 function persist(): void {
   const ctx = getContext();
   if (!ctx?.extensionSettings) return;
   ctx.extensionSettings[SETTINGS_KEY] = JSON.parse(JSON.stringify(apiSettings));
+  const fingerprint = channelFingerprint(apiSettings.channels);
+  if (fingerprint !== sharedChannelsFingerprint) writeSharedChannels();
   ctx.saveSettingsDebounced?.();
 }
 
@@ -595,6 +688,8 @@ export function hydrateSettings(): void {
       /* ignore */
     }
   }
+
+  hydrateSharedChannels(apiSettings.channels);
 
   // 播种内置默认条目名规则:仅当从未发放过(老用户/新用户首次)才补进列表,并置标记 + 落盘。
   // 只发一次——用户之后删空也不会被反复塞回。追加而非覆盖,不动用户已有的自定义规则。

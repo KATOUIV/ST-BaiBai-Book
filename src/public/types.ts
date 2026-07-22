@@ -26,6 +26,7 @@ export interface HistoryOptions {
 
 export interface PublicCapabilities {
   globalApi: true;
+  sharedApiChannels: true;
   slashCommand: boolean;
   macros: boolean;
   parameterizedMacros: boolean;
